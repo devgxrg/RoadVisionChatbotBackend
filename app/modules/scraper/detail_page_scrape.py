@@ -3,7 +3,7 @@ from bs4 import BeautifulSoup
 from bs4.element import Tag
 import requests
 
-from data_models import TenderDetailContactInformation, TenderDetailDetails, TenderDetailKeyDates, TenderDetailNotice, TenderDetailOtherDetail, TenderDetailPage, TenderDetailPageFile
+from .data_models import TenderDetailContactInformation, TenderDetailDetails, TenderDetailKeyDates, TenderDetailNotice, TenderDetailOtherDetail, TenderDetailPage, TenderDetailPageFile
 
 def notice_table_helper(search: str, rows: List[Tag]) -> str:
     for row in rows:

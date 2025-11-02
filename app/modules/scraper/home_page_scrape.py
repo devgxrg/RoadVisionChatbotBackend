@@ -3,7 +3,7 @@ from bs4 import BeautifulSoup
 
 import requests
 
-from data_models import HomePageData, HomePageHeader, Tender, TenderQuery
+from .data_models import HomePageData, HomePageHeader, Tender, TenderQuery
 
 def scrape_page(url) -> HomePageData:
     page = requests.get(url)

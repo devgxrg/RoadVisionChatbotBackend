@@ -2,7 +2,7 @@ from bs4 import BeautifulSoup
 import copy
 import premailer
 
-from data_models import HomePageData
+from .data_models import HomePageData
 
 p = premailer.Premailer(
         allow_loading_external_files=True

@@ -1,6 +1,6 @@
 
 import os
-from drive import authenticate_google_drive, get_shareable_link, upload_folder_to_drive
+from .drive import authenticate_google_drive, get_shareable_link, upload_folder_to_drive
 
 
 def test_google_drive():

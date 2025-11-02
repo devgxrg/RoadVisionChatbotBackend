@@ -15,11 +15,11 @@ import os
 # Local modules
 from app.db.database import SessionLocal
 from app.modules.scraper.db.repository import ScraperRepository
-from detail_page_scrape import scrape_tender
-from drive import authenticate_google_drive, download_folders, get_shareable_link, upload_folder_to_drive
-from email_sender import listen_and_get_link, send_html_email
-from home_page_scrape import scrape_page
-from templater import generate_email, reformat_page
+from .detail_page_scrape import scrape_tender
+from .drive import authenticate_google_drive, download_folders, get_shareable_link, upload_folder_to_drive
+from .email_sender import listen_and_get_link, send_html_email
+from .home_page_scrape import scrape_page
+from .templater import generate_email, reformat_page
 
 load_dotenv()
 

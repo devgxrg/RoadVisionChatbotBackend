@@ -11,8 +11,8 @@ import os
 import mimetypes
 import requests
 
-from data_models import HomePageData
-from detail_page_scrape import scrape_tender
+from .data_models import HomePageData
+from .detail_page_scrape import scrape_tender
 
 # Google drive setup
 SCOPES = ['https://www.googleapis.com/auth/drive']
