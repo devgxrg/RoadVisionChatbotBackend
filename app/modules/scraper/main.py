@@ -19,6 +19,7 @@ from .detail_page_scrape import scrape_tender
 # from .drive import authenticate_google_drive, download_folders, get_shareable_link, upload_folder_to_drive
 from .email_sender import listen_and_get_link, send_html_email
 from .home_page_scrape import scrape_page
+from .services.dms_integration_service import process_tenders_for_dms
 from .templater import generate_email, reformat_page
 
 load_dotenv()
@@ -58,15 +59,18 @@ def scrape_link(link: str):
 
     # download_folders(homepage) # NOTE: De-activated while switching to DMS
 
-    # --- Save to Database ---
     db = SessionLocal()
     try:
+        # --- DMS Integration and Database Save ---
+        homepage = process_tenders_for_dms(db, homepage)
+
         print("\n💾 Saving scraped data to the database...")
         scraper_repo = ScraperRepository(db)
         scraper_repo.create_scrape_run(homepage)
         print("✅ Scraped data saved successfully.")
+
     except Exception as e:
-        print(f"❌ An error occurred while saving to the database: {e}")
+        print(f"❌ A critical error occurred during DMS integration or database save: {e}")
         db.rollback()
     finally:
         db.close()

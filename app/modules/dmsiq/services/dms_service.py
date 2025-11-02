@@ -159,6 +159,44 @@ class DmsService:
             self.repo.rollback()
             raise HTTPException(status_code=500, detail=f"Error moving folder: {str(e)}")
 
+    def get_or_create_folder_by_path(self, path: str, created_by: UUID) -> Folder:
+        """
+        Retrieves a folder by its materialized path. If the folder (or any of its parents)
+        does not exist, they will be created.
+        """
+        try:
+            folder = self.repo.get_folder_by_path(path)
+            if folder:
+                return self._folder_to_response(folder)
+
+            # Folder doesn't exist, create it and parents if necessary
+            path_parts = [part for part in path.strip('/').split('/') if part]
+            current_path_segment = "/"
+            parent_id = None
+            target_folder = None
+
+            for part in path_parts:
+                current_path_segment += f"{part}/"
+                folder_in_path = self.repo.get_folder_by_path(current_path_segment)
+                if not folder_in_path:
+                    folder_in_path = self.repo.create_folder(
+                        name=part,
+                        created_by=created_by,
+                        parent_folder_id=parent_id
+                    )
+                parent_id = folder_in_path.id
+                target_folder = folder_in_path
+            
+            self.repo.commit()
+
+            if not target_folder:
+                raise HTTPException(status_code=500, detail="Failed to create folder hierarchy")
+
+            return self._folder_to_response(target_folder)
+        except Exception as e:
+            self.repo.rollback()
+            raise HTTPException(status_code=500, detail=f"Error getting or creating folder by path: {str(e)}")
+
     # ==================== DOCUMENT SERVICES ====================
 
     def list_documents(
@@ -320,6 +358,54 @@ class DmsService:
             success, full_path_or_error = FileStorageService.save_file(file_content, document.storage_path)
             if not success:
                 self.repo.rollback() # Important!
+                raise HTTPException(status_code=500, detail=f"Failed to save file: {full_path_or_error}")
+            
+            if category_id:
+                self.repo.add_document_category(document.id, category_id)
+            
+            self.repo.commit()
+            return self._document_to_response(document)
+
+        except Exception as e:
+            self.repo.rollback()
+            if isinstance(e, HTTPException):
+                raise
+            raise HTTPException(status_code=500, detail=f"Error uploading document: {str(e)}")
+
+    def upload_document_from_bytes(
+        self,
+        file_content: bytes,
+        filename: str,
+        mime_type: str,
+        folder_id: UUID,
+        uploaded_by: UUID,
+        category_id: Optional[UUID] = None,
+        tags: Optional[List[str]] = None,
+        confidentiality_level: str = ConfidentialityLevel.INTERNAL
+    ) -> Document:
+        """Handle synchronous file upload from bytes, for internal service use."""
+        try:
+            folder = self.repo.get_folder(folder_id)
+            if not folder:
+                raise HTTPException(status_code=404, detail="Folder not found")
+
+            file_size = len(file_content)
+
+            document = self.repo.create_document(
+                name=filename,
+                original_filename=filename,
+                mime_type=mime_type,
+                size_bytes=file_size,
+                uploaded_by=uploaded_by,
+                folder_id=folder_id,
+                confidentiality_level=confidentiality_level,
+                tags=tags,
+                status="active"
+            )
+            
+            success, full_path_or_error = FileStorageService.save_file(file_content, document.storage_path)
+            if not success:
+                self.repo.rollback()
                 raise HTTPException(status_code=500, detail=f"Failed to save file: {full_path_or_error}")
             
             if category_id:
