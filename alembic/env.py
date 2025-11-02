@@ -13,6 +13,7 @@ from app.config import settings
 from app.db.database import Base
 from app.modules.askai.db import models
 from app.modules.auth.db import schema as auth_schema
+from app.modules.scraper.db import schema as scraper_schema
 import pgvector
 from pgvector.sqlalchemy import Vector
 
