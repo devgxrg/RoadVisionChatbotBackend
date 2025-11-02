@@ -5,7 +5,8 @@ Implements all document management system endpoints following OpenAPI specificat
 
 from typing import Optional, List
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Form
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db_session
@@ -173,6 +174,34 @@ def revoke_folder_permission(
 
 # ==================== DOCUMENT ENDPOINTS ====================
 
+@router.post("/file-upload", response_model=Document, tags=["DMS - Documents"])
+async def upload_file(
+    folder_id: UUID = Form(...),
+    file: UploadFile = File(...),
+    tags: Optional[List[str]] = Form(None),
+    category_id: Optional[UUID] = Form(None),
+    confidentiality_level: str = Form("internal"),
+    service: DmsService = Depends(get_dms_service)
+):
+    """
+    Directly upload a file to the DMS.
+    This endpoint is for Phase 1 (local storage) and bypasses the presigned URL flow.
+    """
+    # TODO: Add authentication and permission check
+    from uuid import uuid4
+    uploaded_by = uuid4()
+    
+    document = await service.upload_document(
+        file=file,
+        folder_id=folder_id,
+        uploaded_by=uploaded_by,
+        category_id=category_id,
+        tags=tags or [],
+        confidentiality_level=confidentiality_level
+    )
+    return document
+
+
 @router.post("/upload-url", response_model=UploadURLResponse, tags=["DMS - Documents"])
 def generate_upload_url(
     data: UploadURLRequest,
@@ -276,6 +305,25 @@ def delete_document(
     Requires write permission on document.
     """
     service.delete_document(document_id)
+
+
+@router.get("/documents/{document_id}/download", response_class=FileResponse, tags=["DMS - Documents"])
+def download_file(
+    document_id: UUID,
+    service: DmsService = Depends(get_dms_service)
+):
+    """
+    Directly download a file from the DMS.
+    """
+    full_path, filename = service.get_document_for_download(document_id)
+
+    if not full_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="File not found on storage."
+        )
+
+    return FileResponse(path=full_path, filename=filename)
 
 
 @router.get("/documents/{document_id}/download-url", response_model=DownloadURLResponse, tags=["DMS - Documents"])

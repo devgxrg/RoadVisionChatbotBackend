@@ -6,7 +6,8 @@ Handles business logic, validation, and orchestration of DMS operations.
 from typing import List, Optional, Dict, Any, Tuple
 from uuid import UUID
 from datetime import datetime, timezone
-from fastapi import HTTPException, status
+from fastapi import HTTPException, status, UploadFile
+from pathlib import Path
 
 from sqlalchemy.orm import Session
 
@@ -229,19 +230,11 @@ class DmsService:
             if not folder:
                 raise HTTPException(status_code=404, detail="Folder not found")
 
-            # Generate storage path
-            doc_id = None  # Will be created by repository
-            from uuid import uuid4
-            doc_id = uuid4()
-
-            storage_path = FileStorageService.get_storage_path(doc_id, original_filename)
-
             document = self.repo.create_document(
                 name=name,
                 original_filename=original_filename,
                 mime_type=mime_type,
                 size_bytes=size_bytes,
-                storage_path=storage_path,
                 uploaded_by=uploaded_by,
                 folder_id=folder_id,
                 confidentiality_level=confidentiality_level,
@@ -249,9 +242,6 @@ class DmsService:
                 doc_metadata=doc_metadata,
                 status="pending"
             )
-
-            # Update document ID to use the generated storage path
-            document.id = doc_id
 
             self.repo.commit()
             return self._document_to_response(document)
@@ -294,6 +284,55 @@ class DmsService:
         except Exception as e:
             self.repo.rollback()
             raise HTTPException(status_code=500, detail=f"Error deleting document: {str(e)}")
+
+    async def upload_document(
+        self,
+        file: UploadFile,
+        folder_id: UUID,
+        uploaded_by: UUID,
+        category_id: Optional[UUID] = None,
+        tags: Optional[List[str]] = None,
+        confidentiality_level: str = ConfidentialityLevel.INTERNAL
+    ) -> Document:
+        """Handle direct file upload."""
+        try:
+            folder = self.repo.get_folder(folder_id)
+            if not folder:
+                raise HTTPException(status_code=404, detail="Folder not found")
+
+            file_content = await file.read()
+            file_size = len(file_content)
+
+            # Create document record. storage_path will be set by the repo.
+            document = self.repo.create_document(
+                name=file.filename,
+                original_filename=file.filename,
+                mime_type=file.content_type,
+                size_bytes=file_size,
+                uploaded_by=uploaded_by,
+                folder_id=folder_id,
+                confidentiality_level=confidentiality_level,
+                tags=tags,
+                status="active"
+            )
+            
+            # Now save the file using the path from the document object
+            success, full_path_or_error = FileStorageService.save_file(file_content, document.storage_path)
+            if not success:
+                self.repo.rollback() # Important!
+                raise HTTPException(status_code=500, detail=f"Failed to save file: {full_path_or_error}")
+            
+            if category_id:
+                self.repo.add_document_category(document.id, category_id)
+            
+            self.repo.commit()
+            return self._document_to_response(document)
+
+        except Exception as e:
+            self.repo.rollback()
+            if isinstance(e, HTTPException):
+                raise
+            raise HTTPException(status_code=500, detail=f"Error uploading document: {str(e)}")
 
     def confirm_upload(
         self,
@@ -590,6 +629,20 @@ class DmsService:
             raise
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Error generating download URL: {str(e)}")
+
+    def get_document_for_download(self, document_id: UUID) -> Tuple[Path, str]:
+        """Get full file path and name for download."""
+        try:
+            document = self.repo.get_document(document_id)
+            if not document:
+                raise HTTPException(status_code=404, detail="Document not found")
+            
+            full_path = FileStorageService.get_full_path(document.storage_path)
+            return full_path, document.original_filename
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error preparing file for download: {str(e)}")
 
     def get_summary(self) -> DocumentSummary:
         """Get DMS summary statistics."""

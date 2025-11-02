@@ -233,6 +233,11 @@ class FileStorageService:
         return DMS_ROOT
 
     @staticmethod
+    def get_full_path(storage_path: str) -> Path:
+        """Get the full, absolute path to a stored file."""
+        return DMS_ROOT / storage_path
+
+    @staticmethod
     def get_storage_stats() -> dict:
         """
         Get storage statistics.

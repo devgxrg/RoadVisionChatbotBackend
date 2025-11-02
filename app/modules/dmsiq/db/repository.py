@@ -209,7 +209,6 @@ class DmsRepository:
         original_filename: str,
         mime_type: str,
         size_bytes: int,
-        storage_path: str,
         uploaded_by: UUID,
         folder_id: Optional[UUID] = None,
         confidentiality_level: str = ConfidentialityLevel.INTERNAL,
@@ -218,6 +217,8 @@ class DmsRepository:
         status: str = "pending"
     ) -> DmsDocument:
         """Create a new document."""
+        from app.modules.dmsiq.services.file_storage import FileStorageService
+
         # Get folder path if folder exists
         folder_path = None
         if folder_id:
@@ -232,7 +233,7 @@ class DmsRepository:
             original_filename=original_filename,
             mime_type=mime_type,
             size_bytes=size_bytes,
-            storage_path=storage_path,
+            storage_path="",  # Placeholder, will be set below
             folder_id=folder_id,
             folder_path=folder_path,
             status=status,
@@ -244,7 +245,12 @@ class DmsRepository:
             storage_provider="local"
         )
         self.db.add(document)
-        self.db.flush()
+        self.db.flush()  # Get ID
+
+        # Set storage path based on ID
+        document.storage_path = FileStorageService.get_storage_path(document.id, original_filename)
+        self.db.flush()  # Save path
+
         return document
 
     def get_document(self, document_id: UUID) -> Optional[DmsDocument]:
