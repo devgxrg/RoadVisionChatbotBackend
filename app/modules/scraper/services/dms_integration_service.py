@@ -35,12 +35,16 @@ def process_tenders_for_dms(db: Session, homepage_data: HomePageData) -> HomePag
     system_user_id = uuid4()  # Placeholder for a system user
 
     # Get or create the root folder for daily tenders
-    root_folder_path = "/Daily Tenders/"
-    dms_service.get_or_create_folder_by_path(root_folder_path, system_user_id)
+    try:
+        root_folder_path = "/Daily Tenders/"
+        dms_service.get_or_create_folder_by_path(root_folder_path, system_user_id)
 
-    date_str = _parse_date(homepage_data.header.date)
-    date_folder_path = f"{root_folder_path}{date_str}/"
-    dms_service.get_or_create_folder_by_path(date_folder_path, system_user_id)
+        date_str = _parse_date(homepage_data.header.date)
+        date_folder_path = f"{root_folder_path}{date_str}/"
+        dms_service.get_or_create_folder_by_path(date_folder_path, system_user_id)
+    except Exception as e:
+        print(f"❌ CRITICAL: Could not create base DMS directories. Aborting DMS processing. Error: {e}")
+        return homepage_data
 
     for query in homepage_data.query_table:
         for tender in query.tenders:

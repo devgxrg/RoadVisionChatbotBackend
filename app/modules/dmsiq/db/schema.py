@@ -32,10 +32,10 @@ class DmsFolder(Base):
 
     # Relationships
     documents = relationship("DmsDocument", back_populates="folder", cascade="all, delete-orphan")
-    subfolders = relationship(
+    parent_folder = relationship(
         "DmsFolder",
         remote_side=[id],
-        backref=backref("parent_folder", cascade="all, delete-orphan"),
+        backref=backref("subfolders", cascade="all, delete-orphan")
     )
     permissions = relationship("DmsFolderPermission", back_populates="folder", cascade="all, delete-orphan")
 

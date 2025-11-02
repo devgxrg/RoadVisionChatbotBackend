@@ -195,6 +195,9 @@ class DmsService:
             return self._folder_to_response(target_folder)
         except Exception as e:
             self.repo.rollback()
+            print(f"ERROR in get_or_create_folder_by_path for path '{path}': {e}")
+            import traceback
+            traceback.print_exc()
             raise HTTPException(status_code=500, detail=f"Error getting or creating folder by path: {str(e)}")
 
     # ==================== DOCUMENT SERVICES ====================
