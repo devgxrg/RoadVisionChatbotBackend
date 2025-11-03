@@ -93,3 +93,53 @@ class DailyTendersResponse(BaseModel):
     company: str
     queries: list[ScrapedTenderQuery]
     model_config = ConfigDict(from_attributes=True)
+
+
+# --- Date Filtering Response Models (Phase TenderIQ) ---
+
+
+class ScrapeDateInfo(BaseModel):
+    """Information about a specific scrape date with tender count"""
+    date: str  # YYYY-MM-DD
+    date_str: str  # "November 3, 2024"
+    run_at: datetime  # ISO format timestamp
+    tender_count: int  # Total tenders on this date
+    is_latest: bool  # Whether this is the most recent scrape
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AvailableDatesResponse(BaseModel):
+    """Response for GET /api/v1/tenderiq/dates endpoint"""
+    dates: list[ScrapeDateInfo]  # All available scrape dates
+
+
+class TenderResponseForFiltering(BaseModel):
+    """Single tender in filtered results (subset of full tender details)"""
+    id: UUID
+    tender_id_str: str
+    tender_name: str
+    tender_url: str
+    city: str
+    value: str
+    due_date: str
+    summary: str
+    # Optional detail fields
+    query_name: Optional[str] = None  # Category from query
+    tender_type: Optional[str] = None
+    tender_value: Optional[str] = None
+    state: Optional[str] = None
+    publish_date: Optional[str] = None
+    last_date_of_bid_submission: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class FilteredTendersResponse(BaseModel):
+    """Response for GET /api/v1/tenderiq/tenders endpoint with filters"""
+    tenders: list[TenderResponseForFiltering]  # Filtered tender results
+    total_count: int  # Total number of tenders returned
+    filtered_by: dict  # What filters were applied (e.g., {"date_range": "last_5_days"})
+    available_dates: list[str]  # List of all available dates in YYYY-MM-DD format
+
+    model_config = ConfigDict(from_attributes=True)

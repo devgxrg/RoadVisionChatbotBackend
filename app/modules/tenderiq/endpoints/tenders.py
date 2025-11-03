@@ -1,9 +1,15 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
+from typing import Optional
 
 from app.db.database import get_db_session
-from app.modules.tenderiq.models.pydantic_models import DailyTendersResponse
+from app.modules.tenderiq.models.pydantic_models import (
+    DailyTendersResponse,
+    AvailableDatesResponse,
+    FilteredTendersResponse,
+)
 from app.modules.tenderiq.services import tender_service
+from app.modules.tenderiq.services.tender_filter_service import TenderFilterService
 
 router = APIRouter()
 
@@ -26,3 +32,218 @@ def get_daily_tenders(db: Session = Depends(get_db_session)):
             detail="No scraped tenders found in the database.",
         )
     return latest_tenders
+
+
+# ==================== Date Filtering Endpoints ====================
+
+
+@router.get(
+    "/dates",
+    response_model=AvailableDatesResponse,
+    tags=["TenderIQ"],
+    summary="Get available scrape dates",
+    description="Returns all available scrape dates with tender counts. "
+    "Used by frontend to populate date selector dropdown.",
+)
+def get_available_dates(db: Session = Depends(get_db_session)):
+    """
+    Get all available scrape dates with tender counts.
+
+    Returns a list of all dates when tenders were scraped, sorted by newest first.
+    Each date includes:
+    - date: YYYY-MM-DD format
+    - date_str: Human-readable format (e.g., "November 3, 2024")
+    - run_at: ISO format timestamp
+    - tender_count: Number of tenders scraped on that date
+    - is_latest: Whether this is the most recent scrape
+
+    Frontend uses this to populate the date selector dropdown.
+
+    **Example Response:**
+    ```json
+    {
+      "dates": [
+        {
+          "date": "2024-11-03",
+          "date_str": "November 3, 2024",
+          "run_at": "2024-11-03T10:30:00Z",
+          "tender_count": 45,
+          "is_latest": true
+        },
+        {
+          "date": "2024-11-02",
+          "date_str": "November 2, 2024",
+          "run_at": "2024-11-02T09:15:00Z",
+          "tender_count": 38,
+          "is_latest": false
+        }
+      ]
+    }
+    ```
+    """
+    try:
+        service = TenderFilterService()
+        return service.get_available_dates(db)
+    except Exception as e:
+        print(f"❌ Error fetching available dates: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch available dates",
+        )
+
+
+@router.get(
+    "/tenders",
+    response_model=FilteredTendersResponse,
+    tags=["TenderIQ"],
+    summary="Get tenders with date and other filters",
+    description="Retrieves tenders filtered by specific date(s) or date ranges, "
+    "with optional additional filters like category, location, and value range.",
+)
+def get_filtered_tenders(
+    db: Session = Depends(get_db_session),
+    date: Optional[str] = Query(
+        None,
+        description="Specific date to retrieve tenders for (format: YYYY-MM-DD). "
+        "Returns all tenders scraped on this date.",
+        example="2024-11-03",
+    ),
+    date_range: Optional[str] = Query(
+        None,
+        description="Predefined date range filter. "
+        "Options: 'last_1_day', 'last_5_days', 'last_7_days', 'last_30_days'",
+        example="last_5_days",
+    ),
+    include_all_dates: bool = Query(
+        False,
+        description="If true, returns all historical tenders regardless of date. "
+        "Takes precedence over 'date' and 'date_range' parameters.",
+    ),
+    category: Optional[str] = Query(
+        None,
+        description="Filter by query category/name (e.g., 'Civil', 'Electrical')",
+        example="Civil",
+    ),
+    location: Optional[str] = Query(
+        None,
+        description="Filter by location/city",
+        example="Mumbai",
+    ),
+    min_value: Optional[float] = Query(
+        None,
+        description="Minimum tender value in crore",
+        example=300,
+    ),
+    max_value: Optional[float] = Query(
+        None,
+        description="Maximum tender value in crore",
+    ),
+):
+    """
+    Get tenders with optional filtering by date and other criteria.
+
+    The endpoint supports three ways to filter by date (in priority order):
+    1. **include_all_dates=true**: Returns all historical tenders
+    2. **date=YYYY-MM-DD**: Returns tenders from a specific date
+    3. **date_range=last_N_days**: Returns tenders from last N days
+
+    Additional filters (category, location, value) can be applied in combination
+    with any date filter.
+
+    **Example Requests:**
+    ```
+    GET /tenders?date_range=last_5_days
+    GET /tenders?date=2024-11-03&category=Civil
+    GET /tenders?include_all_dates=true&location=Mumbai&min_value=100&max_value=500
+    ```
+
+    **Example Response:**
+    ```json
+    {
+      "tenders": [
+        {
+          "id": "550e8400-e29b-41d4-a716-446655440000",
+          "tender_id_str": "TEN-2024-001",
+          "tender_name": "Construction of Multi-Story Building",
+          "tender_url": "https://...",
+          "city": "Mumbai",
+          "value": "250 Crore",
+          "due_date": "2024-11-15",
+          "summary": "...",
+          "query_name": "Civil",
+          "tender_type": "Open",
+          "state": "Maharashtra"
+        }
+      ],
+      "total_count": 12,
+      "filtered_by": {
+        "date_range": "last_5_days",
+        "category": "Civil"
+      },
+      "available_dates": ["2024-11-03", "2024-11-02", "2024-11-01", ...]
+    }
+    ```
+    """
+    try:
+        service = TenderFilterService()
+
+        # Determine which filter to use (include_all_dates takes precedence)
+        if include_all_dates:
+            print(f"📅 Fetching all tenders with filters: category={category}, location={location}")
+            return service.get_all_tenders(
+                db,
+                category=category,
+                location=location,
+                min_value=min_value,
+                max_value=max_value,
+            )
+        elif date:
+            # Validate date format
+            if not service.validate_date_format(date):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid date format. Use YYYY-MM-DD",
+                )
+            print(f"📅 Fetching tenders for date: {date}")
+            return service.get_tenders_by_specific_date(
+                db,
+                date=date,
+                category=category,
+                location=location,
+                min_value=min_value,
+                max_value=max_value,
+            )
+        elif date_range:
+            print(f"📅 Fetching tenders for date range: {date_range}")
+            return service.get_tenders_by_date_range(
+                db,
+                date_range=date_range,
+                category=category,
+                location=location,
+                min_value=min_value,
+                max_value=max_value,
+            )
+        else:
+            # Default: return latest scrape (like dailytenders but with structured response)
+            print("📅 No date filter specified, returning latest scrape")
+            return service.get_tenders_by_date_range(
+                db,
+                date_range="last_1_day",
+                category=category,
+                location=location,
+                min_value=min_value,
+                max_value=max_value,
+            )
+
+    except ValueError as e:
+        print(f"⚠️  Validation error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        print(f"❌ Error fetching filtered tenders: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch tenders with filters",
+        )

@@ -206,3 +206,178 @@ class ScraperRepository:
         ).delete()
         self.db.commit()
         return deleted_count
+
+    # ==================== DATE FILTERING METHODS (Phase TenderIQ) ====================
+
+    def get_scrape_runs_by_date_range(
+        self, days: Optional[int] = None
+    ) -> list[ScrapeRun]:
+        """
+        Get scrape runs from the last N days.
+
+        Args:
+            days: Number of days to look back. None means all historical data.
+
+        Returns:
+            List of ScrapeRun objects ordered by run_at DESC (newest first)
+
+        Example:
+            get_scrape_runs_by_date_range(5)  # Last 5 days
+            get_scrape_runs_by_date_range()   # All historical
+        """
+        query = self.db.query(ScrapeRun)
+
+        if days is not None:
+            cutoff_date = datetime.utcnow() - timedelta(days=days)
+            query = query.filter(ScrapeRun.run_at >= cutoff_date)
+
+        return query.order_by(ScrapeRun.run_at.desc()).all()
+
+    def get_available_scrape_runs(self) -> list[ScrapeRun]:
+        """
+        Get all distinct scrape runs ordered by date (newest first).
+        Used to populate date selector dropdown in frontend.
+
+        Returns:
+            List of ScrapeRun objects with count of tenders eager-loaded
+
+        Note:
+            Each ScrapeRun has a relationship to queries which have tenders.
+            Caller can count len(scrape_run.queries[*].tenders) for tender_count.
+        """
+        return (
+            self.db.query(ScrapeRun)
+            .order_by(ScrapeRun.run_at.desc())
+            .options(
+                joinedload(ScrapeRun.queries).joinedload(ScrapedTenderQuery.tenders)
+            )
+            .all()
+        )
+
+    def get_tenders_by_scrape_run(
+        self,
+        scrape_run_id,
+        category: Optional[str] = None,
+        location: Optional[str] = None,
+        min_value: Optional[float] = None,
+        max_value: Optional[float] = None,
+    ) -> list[ScrapedTender]:
+        """
+        Get all tenders from a specific scrape run with optional filters.
+
+        Args:
+            scrape_run_id: UUID of the ScrapeRun
+            category: Filter by query_name (e.g., "Civil", "Electrical")
+            location: Filter by city
+            min_value: Filter by minimum tender value (in crore)
+            max_value: Filter by maximum tender value (in crore)
+
+        Returns:
+            List of ScrapedTender objects matching filters
+
+        Example:
+            get_tenders_by_scrape_run(run_id, category="Civil", location="Mumbai")
+        """
+        query = (
+            self.db.query(ScrapedTender)
+            .join(ScrapedTenderQuery)
+            .filter(ScrapedTenderQuery.scrape_run_id == scrape_run_id)
+            .options(joinedload(ScrapedTender.files))
+        )
+
+        if category:
+            query = query.filter(ScrapedTenderQuery.query_name == category)
+
+        if location:
+            query = query.filter(ScrapedTender.city == location)
+
+        # Note: min_value and max_value are stored as strings in DB
+        # Would need parsing for true numeric comparison
+        # For now, leaving as extension point
+
+        return query.all()
+
+    def get_tenders_by_specific_date(
+        self,
+        date: str,  # Format: "YYYY-MM-DD"
+        category: Optional[str] = None,
+        location: Optional[str] = None,
+        min_value: Optional[float] = None,
+        max_value: Optional[float] = None,
+    ) -> list[ScrapedTender]:
+        """
+        Get all tenders scraped on a specific date.
+
+        Args:
+            date: Date string in format "YYYY-MM-DD"
+            category: Filter by query_name
+            location: Filter by city
+            min_value: Filter by minimum tender value
+            max_value: Filter by maximum tender value
+
+        Returns:
+            List of ScrapedTender objects from that date
+
+        Raises:
+            ValueError: If date format is invalid
+
+        Example:
+            get_tenders_by_specific_date("2024-11-03", category="Civil")
+        """
+        try:
+            from datetime import datetime as dt
+
+            # Parse the date string
+            target_date = dt.strptime(date, "%Y-%m-%d")
+            next_day = target_date + timedelta(days=1)
+        except ValueError as e:
+            raise ValueError(f"Invalid date format. Expected YYYY-MM-DD, got '{date}'") from e
+
+        # Query for scrape runs on this specific date
+        query = (
+            self.db.query(ScrapedTender)
+            .join(ScrapedTenderQuery)
+            .join(ScrapeRun)
+            .filter(ScrapeRun.run_at >= target_date)
+            .filter(ScrapeRun.run_at < next_day)
+            .options(joinedload(ScrapedTender.files))
+        )
+
+        if category:
+            query = query.filter(ScrapedTenderQuery.query_name == category)
+
+        if location:
+            query = query.filter(ScrapedTender.city == location)
+
+        return query.all()
+
+    def get_all_tenders_with_filters(
+        self,
+        category: Optional[str] = None,
+        location: Optional[str] = None,
+        min_value: Optional[float] = None,
+        max_value: Optional[float] = None,
+    ) -> list[ScrapedTender]:
+        """
+        Get all tenders in the system with optional filters.
+
+        Args:
+            category: Filter by query_name
+            location: Filter by city
+            min_value: Filter by minimum tender value
+            max_value: Filter by maximum tender value
+
+        Returns:
+            List of all ScrapedTender objects matching filters
+        """
+        query = self.db.query(ScrapedTender).options(joinedload(ScrapedTender.files))
+
+        if category:
+            query = query.join(ScrapedTenderQuery).filter(
+                ScrapedTenderQuery.query_name == category
+            )
+
+        if location:
+            query = query.filter(ScrapedTender.city == location)
+
+        return query.all()
