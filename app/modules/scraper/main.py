@@ -6,6 +6,7 @@ from selenium import webdriver
 from selenium.webdriver.chrome.webdriver import WebDriver
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
+from datetime import datetime
 
 import requests
 import re
@@ -21,6 +22,7 @@ from .email_sender import listen_and_get_link, listen_and_get_unprocessed_emails
 from .home_page_scrape import scrape_page
 from .services.dms_integration_service import process_tenders_for_dms
 from .templater import generate_email, reformat_page
+from .progress_tracker import ProgressTracker, ScrapeSection, logger
 
 load_dotenv()
 
@@ -45,171 +47,300 @@ def insert_drive_links(soup: BeautifulSoup):
         tender1['href'] = tender2.find_all('a')[0]['href']
 
 def scrape_link(link: str):
-    homepage = scrape_page(link)
-    removed_tenders = {}
-    for query_table in homepage.query_table:
-        print("Current query: " + query_table.query_name)
-        for tender in query_table.tenders:
-            try:
-                tender.details = scrape_tender(tender.tender_url)
-            except Exception as e:
-                query_table.tenders.remove(tender)
-                removed_tenders[tender.tender_id] = json.loads(tender.model_dump_json(indent=2))
-                print("Error: " + str(e))
+    """
+    Main scraping function with comprehensive progress tracking and logging.
 
-    # download_folders(homepage) # NOTE: De-activated while switching to DMS
+    Flow:
+    1. Scrape home page
+    2. Scrape detail pages for each tender
+    3. DMS integration
+    4. Save to database
+    5. Generate and send email
+    """
+    tracker = ProgressTracker(verbose=True)
+    start_time = datetime.now()
 
-    db = SessionLocal()
     try:
-        # --- DMS Integration and Database Save ---
-        homepage = process_tenders_for_dms(db, homepage)
+        with ScrapeSection(tracker, "Homepage Scraping"):
+            logger.info(f"📍 Starting scrape of: {link}")
+            homepage = scrape_page(link)
+            total_tenders = sum(len(q.tenders) for q in homepage.query_table)
+            logger.info(f"📊 Found {total_tenders} tenders across {len(homepage.query_table)} categories")
 
-        print("\n💾 Saving scraped data to the database...")
-        scraper_repo = ScraperRepository(db)
-        scraper_repo.create_scrape_run(homepage)
-        print("✅ Scraped data saved successfully.")
+            for query in homepage.query_table:
+                logger.info(f"   📋 {query.query_name}: {len(query.tenders)} tenders")
+
+        removed_tenders = {}
+
+        # Create progress bar for detail page scraping
+        total_tenders = sum(len(q.tenders) for q in homepage.query_table)
+        detail_progress = tracker.create_detail_scrape_progress_bar(total_tenders)
+
+        with ScrapeSection(tracker, "Detail Page Scraping"):
+            for query_table in homepage.query_table:
+                query_progress = tracker.create_query_progress_bar(
+                    query_table.query_name,
+                    len(query_table.tenders)
+                )
+
+                tenders_to_remove = []
+                for tender in query_table.tenders:
+                    try:
+                        logger.debug(f"🎯 Scraping detail page for: {tender.tender_name}")
+                        tender.details = scrape_tender(tender.tender_url)
+                        logger.debug(f"✅ Detail page scraped: {tender.tender_name}")
+                    except Exception as e:
+                        logger.warning(f"⚠️  Failed to scrape details for {tender.tender_name}: {str(e)}")
+                        tenders_to_remove.append(tender)
+                        removed_tenders[tender.tender_id] = json.loads(
+                            tender.model_dump_json(indent=2)
+                        )
+
+                    if query_progress:
+                        query_progress.update(1)
+                    if detail_progress:
+                        detail_progress.update(1)
+
+                # Remove tenders after iteration to avoid list modification during iteration
+                for tender in tenders_to_remove:
+                    query_table.tenders.remove(tender)
+
+                if query_progress:
+                    query_progress.close()
+
+            if detail_progress:
+                detail_progress.close()
+
+            if removed_tenders:
+                logger.warning(f"⚠️  Removed {len(removed_tenders)} tenders due to scraping errors")
+            logger.info(f"✅ Detail page scraping completed for {total_tenders - len(removed_tenders)} tenders")
+
+        # Database operations
+        db_save_progress = tracker.create_database_save_progress_bar(1)
+
+        db = SessionLocal()
+        try:
+            with ScrapeSection(tracker, "DMS Integration & Database Save"):
+                logger.info("🔄 Processing tenders for DMS integration...")
+                homepage = process_tenders_for_dms(db, homepage)
+                tracker.update_progress("database", 1, "DMS integration completed")
+
+                logger.info("💾 Saving scraped data to database...")
+                scraper_repo = ScraperRepository(db)
+                scraper_repo.create_scrape_run(homepage)
+                tracker.update_progress("database", 1, "Database save completed")
+
+                num_tenders = sum(len(q.tenders) for q in homepage.query_table)
+                logger.info(f"✅ Successfully saved {num_tenders} tenders to database")
+
+        except Exception as e:
+            logger.error(f"❌ Critical error during DMS integration or database save", e)
+            db.rollback()
+            tracker.log_error("Database operation failed", e)
+            raise
+        finally:
+            db.close()
+            if db_save_progress:
+                db_save_progress.close()
+            logger.info("🔒 Database session closed")
+
+        # Email generation and sending
+        with ScrapeSection(tracker, "Email Generation & Sending"):
+            logger.info("📧 Generating email template...")
+            generated_template = generate_email(homepage)
+
+            logger.info("💾 Writing HTML files...")
+            with open("email.html", "w") as f:
+                f.write(generated_template.prettify())
+
+            if removed_tenders:
+                with open("removed_tenders.json", "w") as f:
+                    f.write(json.dumps(removed_tenders))
+                logger.info(f"📝 Wrote removed_tenders.json with {len(removed_tenders)} entries")
+
+            logger.info("📤 Sending email...")
+            send_html_email(generated_template)
+            logger.info("✅ Email sent successfully")
+
+        # Log final statistics
+        duration = (datetime.now() - start_time).total_seconds()
+        final_tender_count = sum(len(q.tenders) for q in homepage.query_table)
+
+        tracker.log_summary({
+            "Total Tenders Processed": final_tender_count,
+            "Tenders Removed (Errors)": len(removed_tenders),
+            "Duration": f"{duration:.2f}s",
+            "Status": "✅ SUCCESS"
+        })
 
     except Exception as e:
-        print(f"❌ A critical error occurred during DMS integration or database save: {e}")
-        db.rollback()
+        tracker.log_error("❌ Fatal error in scrape_link", e)
+        raise
     finally:
-        db.close()
-        print("🔒 Database session closed.")
-
-    generated_template = generate_email(homepage)
-    # insert_drive_links(generated_template)
-
-    with open("email.html", "w") as f:
-        f.write(generated_template.prettify())
-
-    with open("removed_tenders.json", "w") as f:
-        f.write(json.dumps(removed_tenders))
-
-    send_html_email(generated_template)
+        tracker.close_all_progress_bars()
 
 def listen_email():
     """
-    NEW APPROACH: 24-hour email polling with deduplication.
+    Email listening loop with progress tracking and comprehensive logging.
 
     Flow:
     1. Fetch ALL emails from tenders@tenderdetail.com (read or unread)
     2. For each email, extract the tender URL
-    3. Check if email+tender has been processed before
+    3. Check if email+tender has been processed before (deduplication)
     4. Check if tender URL has been processed from ANY email
     5. If not processed, scrape it and log in database
     6. Wait 5 minutes and repeat
 
     This avoids the "user reads email → listener can't find it" bug.
     """
+    tracker = ProgressTracker(verbose=True)
+    cycle_number = 0
+
     while True:
-        print("\n--- Starting new cycle: Checking for tender emails (24-hour polling) ---")
+        cycle_number += 1
+        cycle_start = datetime.now()
 
-        db = SessionLocal()
-        try:
-            scraper_repo = ScraperRepository(db)
+        with ScrapeSection(tracker, f"Email Polling Cycle #{cycle_number}"):
+            db = SessionLocal()
+            try:
+                scraper_repo = ScraperRepository(db)
 
-            # 1. Get all emails from last 24 hours
-            emails_data = listen_and_get_unprocessed_emails()
+                # 1. Get all emails from last 24 hours
+                logger.info("📧 Fetching unprocessed emails...")
+                emails_data = listen_and_get_unprocessed_emails()
 
-            if not emails_data:
-                print("ℹ️  No emails from target senders found.")
-                db.close()
-                time.sleep(300)
-                continue
-
-            print(f"📧 Found {len(emails_data)} emails with tender URLs. Checking deduplication...")
-
-            # 2. Process each email
-            processed_count = 0
-            skipped_count = 0
-
-            for email_info in emails_data:
-                email_uid = email_info['email_uid']
-                email_sender = email_info['email_sender']
-                email_date = email_info['email_date']
-                tender_url = email_info['tender_url']
-
-                print(f"\n📋 Processing email {email_uid} from {email_sender}")
-                print(f"   Tender URL: {tender_url}")
-
-                # 3. Check if this email+tender combination has been processed
-                if scraper_repo.has_email_been_processed(email_uid, tender_url):
-                    print(f"   ⏭️  Skipping: Email {email_uid} + tender already processed")
-                    scraper_repo.log_email_processing(
-                        email_uid=email_uid,
-                        email_sender=email_sender,
-                        email_received_at=email_date,
-                        tender_url=tender_url,
-                        processing_status="skipped",
-                        error_message="Email+tender combination already processed"
-                    )
-                    skipped_count += 1
-                    continue
-
-                # 4. Check if this tender URL has been processed from ANY email
-                if scraper_repo.has_tender_url_been_processed(tender_url):
-                    print(f"   ⏭️  Skipping: Tender URL already processed from different email")
-                    scraper_repo.log_email_processing(
-                        email_uid=email_uid,
-                        email_sender=email_sender,
-                        email_received_at=email_date,
-                        tender_url=tender_url,
-                        processing_status="skipped",
-                        error_message="Tender URL already processed"
-                    )
-                    skipped_count += 1
-                    continue
-
-                # 5. This is a new email → Scrape it!
-                print(f"   🚀 NEW email! Starting scrape for: {tender_url}")
-                try:
-                    # Close the current session for the scrape
+                if not emails_data:
+                    logger.info("ℹ️  No emails from target senders found.")
                     db.close()
+                    continue  # Skip to sleep and retry in next cycle
 
-                    scrape_link(tender_url)  # Your existing scraping function
+                logger.info(f"📊 Found {len(emails_data)} emails with tender URLs")
 
-                    # Re-open session for logging
-                    db = SessionLocal()
-                    scraper_repo = ScraperRepository(db)
+                # Create progress bar for email processing
+                email_progress = tracker.create_email_progress_bar(len(emails_data))
 
-                    # Log successful processing
-                    scraper_repo.log_email_processing(
-                        email_uid=email_uid,
-                        email_sender=email_sender,
-                        email_received_at=email_date,
-                        tender_url=tender_url,
-                        processing_status="success"
-                    )
+                # 2. Process each email
+                processed_count = 0
+                skipped_count = 0
+                failed_count = 0
 
-                    print(f"   ✅ Scraping completed successfully for {tender_url}")
-                    processed_count += 1
+                # Create deduplication progress bar
+                dedup_progress = tracker.create_deduplication_progress_bar(len(emails_data))
 
-                except Exception as e:
-                    # Log the failure
-                    scraper_repo.log_email_processing(
-                        email_uid=email_uid,
-                        email_sender=email_sender,
-                        email_received_at=email_date,
-                        tender_url=tender_url,
-                        processing_status="failed",
-                        error_message=str(e)
-                    )
-                    print(f"   ❌ Error during scrape: {e}")
+                for email_info in emails_data:
+                    email_uid = email_info['email_uid']
+                    email_sender = email_info['email_sender']
+                    email_date = email_info['email_date']
+                    tender_url = email_info['tender_url']
 
-            # 6. Print summary
-            print(f"\n📊 Cycle Summary:")
-            print(f"   ✅ Processed: {processed_count} new tenders")
-            print(f"   ⏭️  Skipped: {skipped_count} already processed")
+                    logger.debug(f"📋 Checking email {email_uid} from {email_sender}")
 
-        except Exception as e:
-            print(f"❌ Critical error in listen_email: {e}")
-            db.rollback()
-        finally:
-            db.close()
+                    # 3. Check if this email+tender combination has been processed
+                    if scraper_repo.has_email_been_processed(email_uid, tender_url):
+                        logger.info(f"⏭️  Skipping (duplicate email+tender): {tender_url}")
+                        scraper_repo.log_email_processing(
+                            email_uid=email_uid,
+                            email_sender=email_sender,
+                            email_received_at=email_date,
+                            tender_url=tender_url,
+                            processing_status="skipped",
+                            error_message="Email+tender combination already processed"
+                        )
+                        skipped_count += 1
+                        if dedup_progress:
+                            dedup_progress.update(1)
+                        if email_progress:
+                            email_progress.update(1)
+                        continue
+
+                    # 4. Check if this tender URL has been processed from ANY email
+                    if scraper_repo.has_tender_url_been_processed(tender_url):
+                        logger.info(f"⏭️  Skipping (duplicate URL): {tender_url}")
+                        scraper_repo.log_email_processing(
+                            email_uid=email_uid,
+                            email_sender=email_sender,
+                            email_received_at=email_date,
+                            tender_url=tender_url,
+                            processing_status="skipped",
+                            error_message="Tender URL already processed"
+                        )
+                        skipped_count += 1
+                        if dedup_progress:
+                            dedup_progress.update(1)
+                        if email_progress:
+                            email_progress.update(1)
+                        continue
+
+                    # 5. This is a new email → Scrape it!
+                    logger.info(f"🚀 NEW email detected! Processing tender: {tender_url}")
+                    try:
+                        # Close the current session for the scrape
+                        db.close()
+
+                        # Call the scraping function with progress tracking
+                        scrape_link(tender_url)
+
+                        # Re-open session for logging
+                        db = SessionLocal()
+                        scraper_repo = ScraperRepository(db)
+
+                        # Log successful processing
+                        scraper_repo.log_email_processing(
+                            email_uid=email_uid,
+                            email_sender=email_sender,
+                            email_received_at=email_date,
+                            tender_url=tender_url,
+                            processing_status="success"
+                        )
+
+                        logger.info(f"✅ Successfully processed new tender from email")
+                        processed_count += 1
+
+                    except Exception as e:
+                        logger.error(f"❌ Error during scrape of {tender_url}", e)
+                        # Log the failure
+                        scraper_repo.log_email_processing(
+                            email_uid=email_uid,
+                            email_sender=email_sender,
+                            email_received_at=email_date,
+                            tender_url=tender_url,
+                            processing_status="failed",
+                            error_message=str(e)
+                        )
+                        failed_count += 1
+
+                    if dedup_progress:
+                        dedup_progress.update(1)
+                    if email_progress:
+                        email_progress.update(1)
+
+                # Close progress bars
+                if dedup_progress:
+                    dedup_progress.close()
+                if email_progress:
+                    email_progress.close()
+
+                # Log cycle summary
+                cycle_duration = (datetime.now() - cycle_start).total_seconds()
+                tracker.log_stats({
+                    "Total Emails": len(emails_data),
+                    "Processed (New)": processed_count,
+                    "Skipped (Duplicates)": skipped_count,
+                    "Failed": failed_count,
+                    "Cycle Duration": f"{cycle_duration:.2f}s"
+                })
+
+            except Exception as e:
+                logger.error(f"❌ Critical error in listen_email cycle", e)
+                db.rollback()
+            finally:
+                db.close()
 
         # 7. Wait for 5 minutes before checking again
         sleep_duration_seconds = 300
-        print(f"--- Cycle complete. Waiting {sleep_duration_seconds / 60} minutes until next check... ---")
+        logger.info(f"\n{'='*60}")
+        logger.info(f"⏳ Next check in {sleep_duration_seconds / 60} minutes...")
+        logger.info(f"{'='*60}\n")
         time.sleep(sleep_duration_seconds)
 
 
