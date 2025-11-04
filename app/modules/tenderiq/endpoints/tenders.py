@@ -1,12 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from typing import Optional
+from uuid import UUID
 
 from app.db.database import get_db_session
 from app.modules.tenderiq.models.pydantic_models import (
     DailyTendersResponse,
     AvailableDatesResponse,
     FilteredTendersResponse,
+    TenderDetailResponse,
 )
 from app.modules.tenderiq.services import tender_service
 from app.modules.tenderiq.services.tender_filter_service import TenderFilterService
@@ -32,6 +34,30 @@ def get_daily_tenders(db: Session = Depends(get_db_session)):
             detail="No scraped tenders found in the database.",
         )
     return latest_tenders
+
+
+@router.get(
+    "/tenders/{tender_id}",
+    response_model=TenderDetailResponse,
+    tags=["TenderIQ"],
+    summary="Get detailed information for a single tender",
+)
+def get_tender_details(
+    tender_id: UUID,
+    db: Session = Depends(get_db_session)
+):
+    """
+    Retrieves comprehensive details for a specific tender by its UUID,
+    including notice information, key dates, contact details, and associated files.
+    """
+    service = TenderFilterService()
+    tender_details = service.get_tender_details(db, tender_id)
+    if not tender_details:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tender not found.",
+        )
+    return tender_details
 
 
 # ==================== Date Filtering Endpoints ====================
@@ -129,6 +155,16 @@ def get_filtered_tenders(
         description="Filter by location/city",
         example="Mumbai",
     ),
+    state: Optional[str] = Query(
+        None,
+        description="Filter by state",
+        example="Maharashtra",
+    ),
+    tender_type: Optional[str] = Query(
+        None,
+        description="Filter by tender type (e.g., 'Open', 'Limited')",
+        example="Open",
+    ),
     min_value: Optional[float] = Query(
         None,
         description="Minimum tender value in crore",
@@ -194,6 +230,8 @@ def get_filtered_tenders(
                 db,
                 category=category,
                 location=location,
+                state=state,
+                tender_type=tender_type,
                 min_value=min_value,
                 max_value=max_value,
             )
@@ -210,6 +248,8 @@ def get_filtered_tenders(
                 date=date,
                 category=category,
                 location=location,
+                state=state,
+                tender_type=tender_type,
                 min_value=min_value,
                 max_value=max_value,
             )
@@ -220,6 +260,8 @@ def get_filtered_tenders(
                 date_range=date_range,
                 category=category,
                 location=location,
+                state=state,
+                tender_type=tender_type,
                 min_value=min_value,
                 max_value=max_value,
             )
@@ -231,6 +273,8 @@ def get_filtered_tenders(
                 date_range="last_1_day",
                 category=category,
                 location=location,
+                state=state,
+                tender_type=tender_type,
                 min_value=min_value,
                 max_value=max_value,
             )

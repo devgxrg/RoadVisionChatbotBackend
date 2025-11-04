@@ -11,6 +11,7 @@ This service handles business logic for:
 """
 
 from typing import Optional
+from uuid import UUID
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 
@@ -20,6 +21,10 @@ from app.modules.tenderiq.models.pydantic_models import (
     FilteredTendersResponse,
     ScrapeDateInfo,
     TenderResponseForFiltering,
+    TenderDetailResponse,
+    TenderNoticeInfo,
+    TenderKeyDatesInfo,
+    TenderContactInfo,
 )
 
 
@@ -29,6 +34,16 @@ class TenderFilterService:
     def __init__(self):
         """Initialize the service"""
         pass
+
+    def get_tender_details(self, db: Session, tender_id: UUID) -> Optional[TenderDetailResponse]:
+        """
+        Get full details for a single tender by its ID.
+        """
+        repo = TenderIQRepository(db)
+        tender = repo.get_tender_by_id(tender_id)
+        if not tender:
+            return None
+        return self._full_tender_to_detailed_response(tender)
 
     def get_available_dates(self, db: Session) -> AvailableDatesResponse:
         """
@@ -81,6 +96,8 @@ class TenderFilterService:
         date_range: str,
         category: Optional[str] = None,
         location: Optional[str] = None,
+        state: Optional[str] = None,
+        tender_type: Optional[str] = None,
         min_value: Optional[float] = None,
         max_value: Optional[float] = None,
     ) -> FilteredTendersResponse:
@@ -127,6 +144,8 @@ class TenderFilterService:
                 scrape_run.id,
                 category=category,
                 location=location,
+                state=state,
+                tender_type=tender_type,
                 min_value=min_value,
                 max_value=max_value,
             )
@@ -141,6 +160,18 @@ class TenderFilterService:
             filtered_by["category"] = category
         if location:
             filtered_by["location"] = location
+        if state:
+            filtered_by["state"] = state
+        if tender_type:
+            filtered_by["tender_type"] = tender_type
+        if state:
+            filtered_by["state"] = state
+        if tender_type:
+            filtered_by["tender_type"] = tender_type
+        if state:
+            filtered_by["state"] = state
+        if tender_type:
+            filtered_by["tender_type"] = tender_type
 
         return FilteredTendersResponse(
             tenders=[self._tender_to_response(t) for t in all_tenders],
@@ -155,6 +186,8 @@ class TenderFilterService:
         date: str,  # Format: "YYYY-MM-DD"
         category: Optional[str] = None,
         location: Optional[str] = None,
+        state: Optional[str] = None,
+        tender_type: Optional[str] = None,
         min_value: Optional[float] = None,
         max_value: Optional[float] = None,
     ) -> FilteredTendersResponse:
@@ -182,6 +215,8 @@ class TenderFilterService:
                 date=date,
                 category=category,
                 location=location,
+                state=state,
+                tender_type=tender_type,
                 min_value=min_value,
                 max_value=max_value,
             )
@@ -210,6 +245,8 @@ class TenderFilterService:
         db: Session,
         category: Optional[str] = None,
         location: Optional[str] = None,
+        state: Optional[str] = None,
+        tender_type: Optional[str] = None,
         min_value: Optional[float] = None,
         max_value: Optional[float] = None,
     ) -> FilteredTendersResponse:
@@ -231,6 +268,8 @@ class TenderFilterService:
         tenders = repo.get_all_tenders_with_filters(
             category=category,
             location=location,
+            state=state,
+            tender_type=tender_type,
             min_value=min_value,
             max_value=max_value,
         )
@@ -293,16 +332,60 @@ class TenderFilterService:
             tender_id_str=tender.tender_id_str,
             tender_name=tender.tender_name,
             tender_url=tender.tender_url,
+            dms_folder_id=tender.dms_folder_id,
             city=tender.city,
             value=tender.value,
             due_date=tender.due_date,
             summary=tender.summary,
-            query_name=None,  # Would need to load from relationship
+            query_name=tender.query.query_name if tender.query else None,
             tender_type=tender.tender_type,
             tender_value=tender.tender_value,
             state=tender.state,
             publish_date=tender.publish_date,
             last_date_of_bid_submission=tender.last_date_of_bid_submission,
+        )
+
+    def _full_tender_to_detailed_response(self, tender) -> TenderDetailResponse:
+        """
+        Convert a full ScrapedTender ORM object to a detailed, nested response model.
+        """
+        return TenderDetailResponse(
+            id=tender.id,
+            tender_id_str=tender.tender_id_str,
+            tender_name=tender.tender_name,
+            tender_url=tender.tender_url,
+            dms_folder_id=tender.dms_folder_id,
+            summary=tender.summary,
+            value=tender.value,
+            due_date=tender.due_date,
+            notice=TenderNoticeInfo(
+                tdr=tender.tdr,
+                tendering_authority=tender.tendering_authority,
+                tender_no=tender.tender_no,
+                tender_id_detail=tender.tender_id_detail,
+                tender_brief=tender.tender_brief,
+                city=tender.city,
+                state=tender.state,
+                document_fees=tender.document_fees,
+                emd=tender.emd,
+                tender_value=tender.tender_value,
+                tender_type=tender.tender_type,
+                bidding_type=tender.bidding_type,
+                competition_type=tender.competition_type,
+            ),
+            key_dates=TenderKeyDatesInfo(
+                publish_date=tender.publish_date,
+                last_date_of_bid_submission=tender.last_date_of_bid_submission,
+                tender_opening_date=tender.tender_opening_date,
+            ),
+            contact_info=TenderContactInfo(
+                company_name=tender.company_name,
+                contact_person=tender.contact_person,
+                address=tender.address,
+            ),
+            tender_details=tender.tender_details,
+            information_source=tender.information_source,
+            files=tender.files,
         )
 
     def validate_date_format(self, date_str: str) -> bool:

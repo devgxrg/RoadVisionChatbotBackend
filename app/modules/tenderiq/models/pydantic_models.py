@@ -120,6 +120,7 @@ class TenderResponseForFiltering(BaseModel):
     tender_id_str: str
     tender_name: str
     tender_url: str
+    dms_folder_id: Optional[UUID] = None
     city: str
     value: str
     due_date: str
@@ -141,5 +142,55 @@ class FilteredTendersResponse(BaseModel):
     total_count: int  # Total number of tenders returned
     filtered_by: dict  # What filters were applied (e.g., {"date_range": "last_5_days"})
     available_dates: list[str]  # List of all available dates in YYYY-MM-DD format
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# --- Tender Detail Response Models ---
+
+class TenderNoticeInfo(BaseModel):
+    tdr: Optional[str] = None
+    tendering_authority: Optional[str] = None
+    tender_no: Optional[str] = None
+    tender_id_detail: Optional[str] = None
+    tender_brief: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    document_fees: Optional[str] = None
+    emd: Optional[str] = None
+    tender_value: Optional[str] = None
+    tender_type: Optional[str] = None
+    bidding_type: Optional[str] = None
+    competition_type: Optional[str] = None
+
+class TenderKeyDatesInfo(BaseModel):
+    publish_date: Optional[str] = None
+    last_date_of_bid_submission: Optional[str] = None
+    tender_opening_date: Optional[str] = None
+
+class TenderContactInfo(BaseModel):
+    company_name: Optional[str] = None
+    contact_person: Optional[str] = None
+    address: Optional[str] = None
+
+class TenderDetailResponse(BaseModel):
+    """Detailed response for a single tender."""
+    id: UUID
+    tender_id_str: str
+    tender_name: str
+    tender_url: str
+    dms_folder_id: Optional[UUID] = None
+    summary: str
+    value: str
+    due_date: str
+
+    notice: TenderNoticeInfo
+    key_dates: TenderKeyDatesInfo
+    contact_info: TenderContactInfo
+
+    tender_details: Optional[str] = None
+    information_source: Optional[str] = None
+
+    files: list[ScrapedTenderFile]
 
     model_config = ConfigDict(from_attributes=True)

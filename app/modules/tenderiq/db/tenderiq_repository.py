@@ -25,6 +25,20 @@ class TenderIQRepository:
     def __init__(self, db: Session):
         self.db = db
 
+    def get_tender_by_id(self, tender_id: UUID) -> Optional[ScrapedTender]:
+        """
+        Get a single tender by its UUID, with all relationships loaded.
+        """
+        return (
+            self.db.query(ScrapedTender)
+            .filter(ScrapedTender.id == tender_id)
+            .options(
+                joinedload(ScrapedTender.files),
+                joinedload(ScrapedTender.query)
+            )
+            .first()
+        )
+
     def get_available_scrape_runs(self) -> list[ScrapeRun]:
         """
         Get all distinct scrape runs ordered by most recent first.
@@ -80,6 +94,8 @@ class TenderIQRepository:
         scrape_run_id,
         category: Optional[str] = None,
         location: Optional[str] = None,
+        state: Optional[str] = None,
+        tender_type: Optional[str] = None,
         min_value: Optional[float] = None,
         max_value: Optional[float] = None,
     ) -> list[ScrapedTender]:
@@ -103,7 +119,10 @@ class TenderIQRepository:
             self.db.query(ScrapedTender)
             .join(ScrapedTenderQuery)
             .filter(ScrapedTenderQuery.scrape_run_id == scrape_run_id)
-            .options(joinedload(ScrapedTender.files))
+            .options(
+                joinedload(ScrapedTender.files),
+                joinedload(ScrapedTender.query)
+            )
         )
 
         if category:
@@ -111,6 +130,12 @@ class TenderIQRepository:
 
         if location:
             query = query.filter(ScrapedTender.city == location)
+
+        if state:
+            query = query.filter(ScrapedTender.state == state)
+
+        if tender_type:
+            query = query.filter(ScrapedTender.tender_type == tender_type)
 
         # Note: min_value and max_value are stored as strings in DB
         # Would need parsing for true numeric comparison
@@ -123,6 +148,8 @@ class TenderIQRepository:
         date: str,  # Format: "YYYY-MM-DD"
         category: Optional[str] = None,
         location: Optional[str] = None,
+        state: Optional[str] = None,
+        tender_type: Optional[str] = None,
         min_value: Optional[float] = None,
         max_value: Optional[float] = None,
     ) -> list[ScrapedTender]:
@@ -164,7 +191,10 @@ class TenderIQRepository:
             .join(ScrapedTenderQuery)
             .join(ScrapeRun)
             .filter(ScrapeRun.tender_release_date == target_date)
-            .options(joinedload(ScrapedTender.files))
+            .options(
+                joinedload(ScrapedTender.files),
+                joinedload(ScrapedTender.query)
+            )
         )
 
         if category:
@@ -173,12 +203,20 @@ class TenderIQRepository:
         if location:
             query = query.filter(ScrapedTender.city == location)
 
+        if state:
+            query = query.filter(ScrapedTender.state == state)
+
+        if tender_type:
+            query = query.filter(ScrapedTender.tender_type == tender_type)
+
         return query.all()
 
     def get_all_tenders_with_filters(
         self,
         category: Optional[str] = None,
         location: Optional[str] = None,
+        state: Optional[str] = None,
+        tender_type: Optional[str] = None,
         min_value: Optional[float] = None,
         max_value: Optional[float] = None,
     ) -> list[ScrapedTender]:
@@ -194,7 +232,10 @@ class TenderIQRepository:
         Returns:
             List of all ScrapedTender objects matching filters
         """
-        query = self.db.query(ScrapedTender).options(joinedload(ScrapedTender.files))
+        query = self.db.query(ScrapedTender).options(
+            joinedload(ScrapedTender.files),
+            joinedload(ScrapedTender.query)
+        )
 
         if category:
             query = query.join(ScrapedTenderQuery).filter(
@@ -203,5 +244,11 @@ class TenderIQRepository:
 
         if location:
             query = query.filter(ScrapedTender.city == location)
+
+        if state:
+            query = query.filter(ScrapedTender.state == state)
+
+        if tender_type:
+            query = query.filter(ScrapedTender.tender_type == tender_type)
 
         return query.all()
