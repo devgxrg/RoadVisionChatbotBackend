@@ -10,26 +10,36 @@ from app.db.database import Base
 
 class ScrapedEmailLog(Base):
     """
-    Tracks emails from tenders@tenderdetail.com to prevent duplicate processing.
-    Uses composite key of email_uid + tender_url for deduplication.
+    Tracks all tender processing (email and manual) to prevent duplicate processing.
+    Supports unified deduplication across both email and manual link pasting modes.
+
+    Fields:
+    - email_uid: "manual" for manual link pasting, IMAP UID for email mode
+    - email_sender: "manual_input" for manual, email address for email mode
+    - priority: For conflict resolution when same tender from multiple sources
     """
     __tablename__ = 'scraped_email_logs'
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
-    # Email metadata
-    email_uid = Column(String, nullable=False, index=True)  # IMAP unique identifier
-    email_sender = Column(String, nullable=False)  # e.g., "tenders@tenderdetail.com"
-    email_received_at = Column(DateTime, nullable=False, index=True)  # When email was received
+    # Email metadata (or manual source info)
+    email_uid = Column(String, nullable=False, index=True)  # IMAP UID or "manual"
+    email_sender = Column(String, nullable=False)  # Email address or "manual_input"
+    email_received_at = Column(DateTime, nullable=False, index=True)  # When email received or manually pasted
 
     # Tender metadata
-    tender_url = Column(String, nullable=False, index=True)  # The scrape link extracted from email
+    tender_url = Column(String, nullable=False, index=True)  # The scrape link
     tender_id = Column(String, nullable=True)  # Optional: tender ID if parsed
 
     # Processing status
     processed_at = Column(DateTime, default=datetime.utcnow, nullable=False)  # When we processed it
-    processing_status = Column(String, default="success", nullable=False)  # "success", "failed", "skipped"
+    processing_status = Column(String, default="success", nullable=False)  # "success", "failed", "skipped", "superseded"
     error_message = Column(Text, nullable=True)  # If processing failed, store error
+
+    # Priority for conflict resolution
+    # Higher priority = preferred when same tender from multiple sources
+    # Email priority defaults to 1, manual override can be 2, programmatic requests can be 3
+    priority = Column(String, default="normal", nullable=False)  # "low", "normal", "high"
 
     # Foreign key to scrape run (if successfully processed)
     scrape_run_id = Column(UUID(as_uuid=True), ForeignKey('scrape_runs.id'), nullable=True)
@@ -40,6 +50,7 @@ class ScrapedEmailLog(Base):
         Index('idx_email_uid_tender_url', 'email_uid', 'tender_url', unique=True),  # Composite unique constraint
         Index('idx_email_received_at', 'email_received_at'),  # For 24-hour window queries
         Index('idx_tender_url', 'tender_url'),  # For URL deduplication
+        Index('idx_tender_url_priority', 'tender_url', 'priority'),  # For priority-based conflict resolution
     )
 
 
@@ -127,12 +138,32 @@ class ScrapedTender(Base):
 
 
 class ScrapedTenderFile(Base):
+    """
+    Stores tender file metadata with support for both remote and locally cached files.
+
+    Strategy:
+    - file_url: Original URL from internet (source of truth)
+    - dms_path: Reference path in DMS where file is/will be cached (e.g., /dms/tenders/YYYY/MM/DD/tender_id/files/filename)
+    - is_cached: Whether file has been downloaded to DMS
+    - cache_status: Current state (pending, cached, failed)
+
+    DMS Module handles the logic of fetching from remote vs local storage.
+    """
     __tablename__ = 'scraped_tender_files'
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    file_name = Column(String)
-    file_url = Column(String)
+
+    # File metadata
+    file_name = Column(String, nullable=False)
+    file_url = Column(String, nullable=False)  # Original internet URL (source)
     file_description = Column(String, nullable=True)
     file_size = Column(String, nullable=True)
 
+    # DMS storage metadata
+    dms_path = Column(String, nullable=False)  # Reference path: /dms/tenders/YYYY/MM/DD/tender_id/files/filename
+    is_cached = Column(Boolean, default=False, nullable=False)  # True = file exists locally in DMS
+    cache_status = Column(String, default="pending", nullable=False)  # "pending", "cached", "failed"
+    cache_error = Column(Text, nullable=True)  # Error message if caching failed
+
+    # Relationship
     tender_id = Column(UUID(as_uuid=True), ForeignKey('scraped_tenders.id'))
     tender = relationship("ScrapedTender", back_populates="files")

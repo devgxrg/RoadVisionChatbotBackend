@@ -122,11 +122,21 @@ class ScraperRepository:
                     )
 
                     for file_data in details.other_detail.files:
+                        # Generate DMS path for file
+                        # Format: /tenders/YYYY/MM/DD/[tender_id]/files/[filename]
+                        date_str = tender_release_date.strftime("%Y-%m-%d")
+                        year, month, day = date_str.split('-')
+                        safe_filename = self._sanitize_filename(file_data.file_name)
+                        dms_path = f"/tenders/{year}/{month}/{day}/{tender_data.tender_id}/files/{safe_filename}"
+
                         scraped_file = ScrapedTenderFile(
                             file_name=file_data.file_name,
                             file_url=file_data.file_url,
                             file_description=file_data.file_description,
                             file_size=file_data.file_size,
+                            dms_path=dms_path,
+                            is_cached=False,  # Files are not downloaded by default
+                            cache_status="pending",  # Ready for background caching
                         )
                         scraped_tender.files.append(scraped_file)
 
@@ -159,6 +169,78 @@ class ScraperRepository:
         ).first()
         return existing is not None
 
+    # ==================== UNIFIED DEDUPLICATION (Email + Manual) ====================
+
+    def check_tender_duplicate_with_priority(self, tender_url: str, source_priority: str = "normal") -> tuple[bool, Optional[ScrapedEmailLog]]:
+        """
+        Unified deduplication check for both email and manual link pasting.
+        Handles priority-based conflict resolution when same tender from multiple sources.
+
+        Returns:
+            (is_duplicate, existing_log)
+            - is_duplicate: True if tender already processed with same or higher priority
+            - existing_log: The existing ScrapedEmailLog record if duplicate found
+
+        Priority levels: "low" < "normal" < "high"
+        - If incoming priority is HIGHER: can override (not a duplicate)
+        - If incoming priority is SAME or LOWER: it's a duplicate
+        """
+        existing = self.db.query(ScrapedEmailLog).filter(
+            ScrapedEmailLog.tender_url == tender_url,
+            ScrapedEmailLog.processing_status.in_(["success", "superseded"]),
+        ).order_by(ScrapedEmailLog.processed_at.desc()).first()
+
+        if existing is None:
+            return False, None
+
+        # Priority comparison: high > normal > low
+        priority_order = {"low": 0, "normal": 1, "high": 2}
+        source_level = priority_order.get(source_priority, 1)
+        existing_level = priority_order.get(existing.priority, 1)
+
+        # If new priority is higher, it's not a duplicate (can override)
+        if source_level > existing_level:
+            return False, existing
+
+        # Same or lower priority = duplicate
+        return True, existing
+
+    def mark_superseded(self, email_log_id: str, reason: str = "Overridden by higher priority source") -> ScrapedEmailLog:
+        """
+        Mark a previous processing as superseded by a newer, higher-priority one.
+        Used when a tender is re-processed with higher priority.
+
+        Args:
+            email_log_id: UUID of the ScrapedEmailLog to supersede
+            reason: Reason for superseding
+
+        Returns:
+            Updated ScrapedEmailLog record
+        """
+        email_log = self.db.query(ScrapedEmailLog).filter(
+            ScrapedEmailLog.id == email_log_id
+        ).first()
+
+        if email_log:
+            email_log.processing_status = "superseded"
+            email_log.error_message = reason
+            self.db.commit()
+            self.db.refresh(email_log)
+
+        return email_log
+
+    def get_duplicate_sources_for_tender(self, tender_url: str) -> list[ScrapedEmailLog]:
+        """
+        Get all processing records for a specific tender URL.
+        Useful for understanding which sources (emails, manual) processed this tender.
+
+        Returns:
+            List of ScrapedEmailLog records ordered by date (newest first)
+        """
+        return self.db.query(ScrapedEmailLog).filter(
+            ScrapedEmailLog.tender_url == tender_url
+        ).order_by(ScrapedEmailLog.processed_at.desc()).all()
+
     def log_email_processing(
         self,
         email_uid: str,
@@ -169,19 +251,22 @@ class ScraperRepository:
         processing_status: str = "success",
         error_message: Optional[str] = None,
         scrape_run_id: Optional[str] = None,
+        priority: str = "normal",
     ) -> ScrapedEmailLog:
         """
-        Log that an email has been processed.
+        Log that an email or manual link has been processed.
+        Supports unified logging for both email and manual link pasting modes.
 
         Args:
-            email_uid: IMAP unique identifier for the email
-            email_sender: Email sender address (e.g., "tenders@tenderdetail.com")
-            email_received_at: When the email was received (from email header)
-            tender_url: The tender link extracted from email
+            email_uid: IMAP UID for email mode, or "manual" for manual link pasting
+            email_sender: Email sender address, or "manual_input" for manual mode
+            email_received_at: When email received or manually submitted
+            tender_url: The tender link extracted or pasted
             tender_id: Optional tender ID if extracted
-            processing_status: "success", "failed", or "skipped"
+            processing_status: "success", "failed", "skipped", or "superseded"
             error_message: Error details if processing failed
             scrape_run_id: ScrapeRun ID if successfully processed
+            priority: "low", "normal", or "high" - for conflict resolution
 
         Returns:
             ScrapedEmailLog record
@@ -195,6 +280,7 @@ class ScraperRepository:
             processing_status=processing_status,
             error_message=error_message,
             scrape_run_id=scrape_run_id,
+            priority=priority,
         )
         self.db.add(email_log)
         self.db.commit()
@@ -397,3 +483,22 @@ class ScraperRepository:
             query = query.filter(ScrapedTender.city == location)
 
         return query.all()
+
+    @staticmethod
+    def _sanitize_filename(filename: str) -> str:
+        """
+        Remove special characters from filename while preserving extension.
+        Used when generating DMS paths.
+
+        Args:
+            filename: Original filename
+
+        Returns:
+            Sanitized filename safe for filesystem
+        """
+        import os
+        import re
+        name, ext = os.path.splitext(filename)
+        # Keep only alphanumeric, hyphens, underscores
+        name = re.sub(r'[^\w\-]', '', name)
+        return f"{name}{ext}" if ext else name

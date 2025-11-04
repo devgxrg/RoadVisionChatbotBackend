@@ -1,8 +1,6 @@
-import mimetypes
 from uuid import uuid4
 from datetime import date as date_type
 
-import requests
 from dateutil import parser
 from sqlalchemy.orm import Session
 
@@ -43,14 +41,22 @@ def _parse_date_to_date_object(date_string: str) -> date_type:
 
 def process_tenders_for_dms(db: Session, homepage_data: HomePageData) -> tuple[HomePageData, date_type]:
     """
-    Processes scraped tender data to create folders and upload files to DMS.
-    Updates the tender objects with their new DMS folder IDs.
+    Processes scraped tender data for DMS integration WITHOUT downloading files.
+
+    New Strategy (Hybrid Remote + Local Caching):
+    1. Parse tender release date from website header
+    2. Create folder structure in DMS: /tenders/YYYY/MM/DD/[tender_id]/files/
+    3. Register file references (with URLs) but DON'T download
+    4. DMS Module handles remote vs local file logic transparently
+    5. Background job can cache files later on-demand
+
+    This eliminates 12-hour download time and massive storage requirements.
 
     Returns:
         tuple: (updated_homepage_data, tender_release_date)
         where tender_release_date is parsed from the website header
     """
-    print("\n🔄 Starting DMS integration process...")
+    print("\n🔄 Starting DMS integration process (NO FILE DOWNLOADS)...")
     dms_service = DmsService(db)
     system_user_id = uuid4()  # Placeholder for a system user
 
@@ -58,12 +64,14 @@ def process_tenders_for_dms(db: Session, homepage_data: HomePageData) -> tuple[H
     tender_release_date = _parse_date_to_date_object(homepage_data.header.date)
     date_str = _parse_date(homepage_data.header.date)
 
-    # Get or create the root folder for daily tenders
+    # Get or create the root folder for tenders by date
     try:
-        root_folder_path = "/Daily Tenders/"
+        root_folder_path = "/tenders/"
         dms_service.get_or_create_folder_by_path(root_folder_path, system_user_id)
 
-        date_folder_path = f"{root_folder_path}{date_str}/"
+        # Create date-based folder structure: YYYY/MM/DD
+        year, month, day = date_str.split('-')
+        date_folder_path = f"{root_folder_path}{year}/{month}/{day}/"
         dms_service.get_or_create_folder_by_path(date_folder_path, system_user_id)
     except Exception as e:
         print(f"❌ CRITICAL: Could not create base DMS directories. Aborting DMS processing. Error: {e}")
@@ -77,38 +85,33 @@ def process_tenders_for_dms(db: Session, homepage_data: HomePageData) -> tuple[H
 
             try:
                 # 1. Create the tender-specific folder in DMS
-                tender_folder_path = f"{date_folder_path}{tender.tender_id}/"
+                # Path: /tenders/YYYY/MM/DD/[tender_id]/files/
+                tender_folder_path = f"{date_folder_path}{tender.tender_id}/files/"
                 tender_folder = dms_service.get_or_create_folder_by_path(tender_folder_path, system_user_id)
                 tender.dms_folder_id = tender_folder.id
-                print(f"  - Ensured DMS folder exists for tender {tender.tender_id} (ID: {tender.dms_folder_id})")
+                print(f"  ✅ DMS folder ready for tender {tender.tender_id}")
+                print(f"     Path: {tender_folder_path}")
 
-                # 2. Download and upload each associated file
+                # 2. Register file references (WITHOUT downloading)
+                # Files remain on their original internet locations
+                # DMS will handle fetching them when needed
+                file_count = len(tender.details.other_detail.files) if tender.details.other_detail.files else 0
+                print(f"     Registering {file_count} remote file references...")
+
                 for file_data in tender.details.other_detail.files:
-                    print(f"    - Processing file: {file_data.file_name}")
-                    # Download file content
-                    response = requests.get(file_data.file_url)
-                    response.raise_for_status()  # Raise an exception for bad status codes
-                    file_content = response.content
+                    # Store file reference with URL
+                    # The scraper's repository.create_scrape_run will save these with:
+                    # - file_url: Original internet URL (source of truth)
+                    # - dms_path: /tenders/YYYY/MM/DD/tender_id/files/filename
+                    # - is_cached: False (not downloaded yet)
+                    # - cache_status: "pending" (ready for background caching)
+                    print(f"    📌 Registered: {file_data.file_name}")
+                    print(f"       URL: {file_data.file_url}")
 
-                    # Guess MIME type
-                    mime_type, _ = mimetypes.guess_type(file_data.file_name)
-                    if mime_type is None:
-                        mime_type = 'application/octet-stream'
-
-                    # Upload to DMS
-                    dms_service.upload_document_from_bytes(
-                        file_content=file_content,
-                        filename=file_data.file_name,
-                        mime_type=mime_type,
-                        folder_id=tender.dms_folder_id,
-                        uploaded_by=system_user_id
-                    )
-                    print(f"      ✅ Uploaded to DMS: {file_data.file_name}")
-
-            except requests.RequestException as e:
-                print(f"    ❌ Failed to download file for tender {tender.tender_id}: {e}")
             except Exception as e:
                 print(f"    ❌ An error occurred processing tender {tender.tender_id} for DMS: {e}")
 
-    print("✅ DMS integration process complete.")
+    print("✅ DMS integration process complete (no files downloaded).")
+    print("   Files remain on original internet locations.")
+    print("   DMS Module will handle caching on-demand.")
     return homepage_data, tender_release_date
