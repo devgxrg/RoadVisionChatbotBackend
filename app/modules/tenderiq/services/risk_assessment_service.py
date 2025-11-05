@@ -3,14 +3,17 @@ Risk Assessment Service
 
 Analyzes tender documents for risks and generates risk reports.
 """
-
+import os
 from typing import List, Optional, Tuple
 from uuid import UUID, uuid4
 from datetime import datetime
 from sqlalchemy.orm import Session
 
-from app.modules.tenderiq.db.repository import AnalyzeRepository
-from app.modules.tenderiq.db.schema import RiskLevelEnum, RiskCategoryEnum
+from app.modules.tenderiq.db.tenderiq_repository import TenderIQRepository
+from app.modules.tenderiq.services.document_parser import DocumentParser
+from app.modules.tenderiq.services.tender_info_extractor import TenderInfoExtractor
+from app.modules.tenderiq.services.scope_work_analyzer import ScopeOfWorkAnalyzer
+from app.modules.tenderiq.services.advanced_intelligence import EnhancedRiskEngine
 from app.modules.tenderiq.models.pydantic_models import (
     RiskAssessmentResponse,
     RiskDetailResponse,
@@ -23,77 +26,67 @@ class RiskAssessmentService:
     def __init__(self):
         pass
 
-    def assess_risks(
+    async def assess_risks(
         self,
+        db: Session,
         tender_id: UUID,
         depth: str = "summary",
         include_historical: bool = False,
     ) -> RiskAssessmentResponse:
         """
-        Perform risk assessment on a tender.
-
-        Args:
-            tender_id: Tender to assess
-            depth: "summary" or "detailed"
-            include_historical: Include historical risk data
-
-        Returns:
-            RiskAssessmentResponse with identified risks
+        Perform on-demand risk assessment by running a partial analysis pipeline.
         """
-        # For now, sample risk data to demonstrate structure
-        sample_risks = [
-            {
-                "title": "Tight Deadline",
-                "description": "Bid submission deadline is only 30 days away",
-                "category": "operational",
-                "impact": "high",
-                "likelihood": "high",
-            },
-            {
-                "title": "Complex Requirements",
-                "description": "RFP contains 45+ requirements with interdependencies",
-                "category": "operational",
-                "impact": "high",
-                "likelihood": "medium",
-            },
-            {
-                "title": "Financial Constraints",
-                "description": "Tender value may not cover all project costs",
-                "category": "financial",
-                "impact": "medium",
-                "likelihood": "low",
-            },
-        ]
+        # 1. Fetch tender and document path
+        repo = TenderIQRepository(db)
+        tender = repo.get_tender_by_id(tender_id)
+        if not tender or not tender.files:
+            raise ValueError("Tender or associated documents not found.")
+        file_path = tender.files[0].dms_path
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Document file not found at path: {file_path}")
 
-        # Build response directly without database interaction
-        risk_details = []
-        for risk_data in sample_risks:
-            level = self._determine_risk_level(risk_data["impact"], risk_data["likelihood"])
-            category = self.categorize_risk(risk_data["description"])
-            risk_details.append(
-                RiskDetailResponse(
-                    id=uuid4(),
-                    level=level,
-                    category=category,
-                    title=risk_data["title"],
-                    description=risk_data["description"],
-                    impact=risk_data["impact"],
-                    likelihood=risk_data["likelihood"],
-                    mitigation_strategy=self.generate_mitigations(risk_data["description"]),
-                    recommended_action=self._get_recommended_action(risk_data["title"]),
-                    related_documents=[],
-                )
+        # 2. Parse document text
+        doc_parser = DocumentParser()
+        raw_text, _, _ = await doc_parser._extract_text(file_path)
+
+        # 3. Extract necessary information for risk assessment
+        info_extractor = TenderInfoExtractor()
+        scope_analyzer = ScopeOfWorkAnalyzer()
+        risk_engine = EnhancedRiskEngine()
+
+        tender_info = await info_extractor.extract_tender_info(db, uuid4(), raw_text)
+        financial_info = await info_extractor.extract_financial_info(raw_text)
+        scope_data = await scope_analyzer.analyze_scope(db, uuid4(), raw_text)
+
+        # 4. Assess risks
+        risk_assessment = await risk_engine.assess_risks(
+            tender_info=tender_info.model_dump(),
+            scope_data=scope_data,
+            financials=financial_info.model_dump(),
+        )
+
+        # 5. Map result to response model
+        risk_details = [
+            RiskDetailResponse(
+                id=uuid4(),
+                level=risk.get("severity", "medium").lower(),
+                category=risk.get("category", "operational").lower(),
+                title=risk.get("factor", "Untitled Risk"),
+                description=risk.get("impact", ""),
+                impact=risk.get("severity", "medium").lower(),
+                likelihood=str(risk.get("likelihood", "medium")),
+                mitigation_strategy=", ".join(risk_assessment.get("mitigation_strategies", [])),
+                recommended_action="Review mitigation strategies.",
+                related_documents=[],
             )
-
-        # Calculate overall risk score
-        risk_score = self.calculate_risk_score([r.model_dump() for r in risk_details])
-        overall_level = self._score_to_level(risk_score)
+            for risk in risk_assessment.get("individual_risks", [])
+        ]
 
         return RiskAssessmentResponse(
             tender_id=tender_id,
-            overall_risk_level=overall_level,
-            risk_score=risk_score,
-            executive_summary=self._generate_executive_summary(risk_details, risk_score),
+            overall_risk_level=risk_assessment.get("risk_level", "medium").lower(),
+            risk_score=int(risk_assessment.get("overall_score", 50)),
+            executive_summary=f"On-demand risk assessment completed. Risk level determined to be {risk_assessment.get('risk_level', 'MEDIUM')}.",
             risks=risk_details,
             analyzed_at=datetime.utcnow(),
         )

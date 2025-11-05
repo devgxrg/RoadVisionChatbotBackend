@@ -254,7 +254,7 @@ def get_analysis_status(
     tags=["Analyze"],
     summary="Get risk assessment for tender",
 )
-def get_risk_assessment(
+async def get_risk_assessment(
     tender_id: UUID,
     depth: str = Query("summary", description="summary or detailed"),
     include_historical: bool = Query(False, description="Include historical risks"),
@@ -303,7 +303,8 @@ def get_risk_assessment(
     try:
         service = RiskAssessmentService()
 
-        risk_response = service.assess_risks(
+        risk_response = await service.assess_risks(
+            db=db,
             tender_id=tender_id,
             depth=depth,
             include_historical=include_historical,
@@ -327,7 +328,7 @@ def get_risk_assessment(
     tags=["Analyze"],
     summary="Get RFP section analysis",
 )
-def get_rfp_sections(
+async def get_rfp_sections(
     tender_id: UUID,
     section_number: Optional[str] = Query(None, description="Get specific section"),
     include_compliance: bool = Query(False, description="Include compliance info"),
@@ -377,7 +378,8 @@ def get_rfp_sections(
     try:
         service = RFPExtractionService()
 
-        rfp_response = service.extract_rfp_sections(
+        rfp_response = await service.extract_rfp_sections(
+            db=db,
             tender_id=tender_id,
             section_number=section_number,
             include_compliance=include_compliance,
@@ -401,7 +403,7 @@ def get_rfp_sections(
     tags=["Analyze"],
     summary="Get scope of work analysis",
 )
-def get_scope_of_work(
+async def get_scope_of_work(
     tender_id: UUID,
     db: Session = Depends(get_db_session),
     current_user = Depends(get_current_active_user),
@@ -451,7 +453,8 @@ def get_scope_of_work(
     try:
         service = ScopeExtractionService()
 
-        scope_response = service.extract_scope(
+        scope_response = await service.extract_scope(
+            db=db,
             tender_id=tender_id,
         )
 
@@ -473,7 +476,7 @@ def get_scope_of_work(
     tags=["Analyze"],
     summary="Generate one-pager executive summary",
 )
-def generate_one_pager(
+async def generate_one_pager(
     tender_id: UUID,
     request: GenerateOnePagerRequest,
     db: Session = Depends(get_db_session),
@@ -514,7 +517,8 @@ def generate_one_pager(
     try:
         service = ReportGenerationService()
 
-        one_pager = service.generate_one_pager(
+        one_pager = await service.generate_one_pager(
+            db=db,
             tender_id=tender_id,
             format=request.format,
             include_risk_assessment=request.include_risk_assessment,

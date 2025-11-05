@@ -30,10 +30,10 @@ These items address critical bugs and incomplete features that prevent the modul
     -   **Issue:** `WorkItemResponse` and `DeliverableResponse` are created with `id=None`, but the Pydantic model expects `id: UUID`, causing a 500 error.
     -   **Fix:** Ensured a valid UUID is generated for the `id` field when creating these objects in the service layer as part of the stateless refactor.
 
--   **[ ] Remove Mock Data from "On-Demand" Endpoints**
+-   **[x] Remove Mock Data from "On-Demand" Endpoints**
     -   **Endpoints:** `/tender/{tender_id}/risks`, `/tender/{tender_id}/rfp-sections`, `/tender/{tender_id}/scope-of-work`, `/tender/{tender_id}/one-pager`.
     -   **Issue:** The services backing these endpoints return hardcoded, static sample data instead of performing real analysis.
-    -   **Fix:** Replace the mock data logic with calls to the real, asynchronous LLM-based services.
+    -   **Fix:** Replaced the mock data logic with calls to the real, asynchronous LLM-based services, making the endpoints fully functional for on-demand analysis.
 
 ### Medium Priority
 

@@ -3,13 +3,15 @@ RFP Extraction Service
 
 Extracts and analyzes RFP (Request for Proposal) sections from tender documents.
 """
-
+import os
 from typing import List, Optional
 from uuid import UUID, uuid4
 from datetime import datetime
 from sqlalchemy.orm import Session
 
-from app.modules.tenderiq.db.repository import AnalyzeRepository
+from app.modules.tenderiq.db.tenderiq_repository import TenderIQRepository
+from app.modules.tenderiq.services.document_parser import DocumentParser
+from app.modules.tenderiq.services.rfp_section_analyzer import RFPSectionAnalyzer
 from app.modules.tenderiq.models.pydantic_models import (
     RFPAnalysisResponse,
     RFPSectionResponse,
@@ -24,94 +26,58 @@ class RFPExtractionService:
     def __init__(self):
         pass
 
-    def extract_rfp_sections(
+    async def extract_rfp_sections(
         self,
+        db: Session,
         tender_id: UUID,
         section_number: Optional[str] = None,
         include_compliance: bool = False,
     ) -> RFPAnalysisResponse:
         """
-        Extract RFP sections from tender documents.
-
-        Args:
-            tender_id: Tender to analyze
-            section_number: Optional specific section to retrieve
-            include_compliance: Include compliance assessment
-
-        Returns:
-            RFPAnalysisResponse with extracted sections
+        Perform on-demand RFP section extraction from tender documents.
         """
-        # Sample RFP sections for demonstration
-        sample_sections = [
-            {
-                "number": "1.0",
-                "title": "Eligibility Criteria",
-                "description": "Vendor must be registered and in good standing for minimum 3 years",
-                "requirements": [
-                    "Valid business registration",
-                    "Minimum 3 years operational history",
-                    "No pending litigation",
-                    "GST registration",
-                ],
-                "complexity": "low",
-            },
-            {
-                "number": "2.0",
-                "title": "Technical Requirements",
-                "description": "Technical specifications for proposed solution and resources",
-                "requirements": [
-                    "System architecture design",
-                    "Technology stack specification",
-                    "Disaster recovery plan",
-                    "Security framework",
-                    "Performance benchmarks",
-                ],
-                "complexity": "high",
-            },
-            {
-                "number": "3.0",
-                "title": "Commercial Terms",
-                "description": "Pricing and commercial conditions",
-                "requirements": [
-                    "Detailed price quotation",
-                    "Payment terms (Net 30)",
-                    "Warranty period (12 months)",
-                    "Service level agreement",
-                ],
-                "complexity": "medium",
-            },
-        ]
+        # 1. Fetch tender and document path
+        repo = TenderIQRepository(db)
+        tender = repo.get_tender_by_id(tender_id)
+        if not tender or not tender.files:
+            raise ValueError("Tender or associated documents not found.")
+        file_path = tender.files[0].dms_path
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Document file not found at path: {file_path}")
 
-        # Build response directly without database interaction
+        # 2. Parse document text
+        doc_parser = DocumentParser()
+        raw_text, _, _ = await doc_parser._extract_text(file_path)
+
+        # 3. Analyze RFP sections
+        rfp_analyzer = RFPSectionAnalyzer()
+        rfp_data = await rfp_analyzer.analyze_rfp_sections(db, uuid4(), raw_text)
+
+        # 4. Map result to response model
         section_responses = []
         criticality_counts = {"high": 0, "medium": 0, "low": 0}
-        total_requirements = 0
 
-        for section_data in sample_sections:
-            if section_number and section_data["number"] != section_number:
+        for section_data in rfp_data.get("sections", []):
+            if section_number and section_data.get("sectionNumber") != section_number:
                 continue
 
-            complexity = section_data["complexity"]
+            complexity = self.assess_section_complexity(section_data.get("content", ""))
             criticality_counts[complexity] += 1
-            total_requirements += len(section_data["requirements"])
-
+            
             compliance = None
             if include_compliance:
-                compliance = RFPSectionComplianceResponse(
-                    status="requires-review",
-                    issues=[],
-                )
+                compliance = RFPSectionComplianceResponse(status="requires-review", issues=[])
 
             section_responses.append(
                 RFPSectionResponse(
                     id=uuid4(),
-                    number=section_data["number"],
-                    title=section_data["title"],
-                    description=section_data["description"],
-                    key_requirements=section_data["requirements"],
+                    number=section_data.get("sectionNumber", "N/A"),
+                    title=section_data.get("title", "Untitled Section"),
+                    description=section_data.get("content", ""),
+                    key_requirements=section_data.get("requirements", []),
                     compliance=compliance,
                     estimated_complexity=complexity,
-                    related_sections=self._find_related_sections(section_data["number"]),
+                    related_sections=[],
                     document_references=[],
                 )
             )
@@ -121,7 +87,7 @@ class RFPExtractionService:
             total_sections=len(section_responses),
             sections=section_responses,
             summary=RFPSectionSummaryResponse(
-                total_requirements=total_requirements,
+                total_requirements=rfp_data.get("total_requirements", 0),
                 criticality=criticality_counts,
             ),
         )

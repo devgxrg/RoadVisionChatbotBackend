@@ -3,13 +3,15 @@ Scope of Work Extraction Service
 
 Extracts scope of work, deliverables, and effort estimation from tender documents.
 """
-
+import os
 from typing import List, Optional
 from uuid import UUID, uuid4
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 
-from app.modules.tenderiq.db.repository import AnalyzeRepository
+from app.modules.tenderiq.db.tenderiq_repository import TenderIQRepository
+from app.modules.tenderiq.services.document_parser import DocumentParser
+from app.modules.tenderiq.services.scope_work_analyzer import ScopeOfWorkAnalyzer
 from app.modules.tenderiq.models.pydantic_models import (
     ScopeOfWorkResponse,
     ScopeOfWorkDetailResponse,
@@ -25,56 +27,63 @@ class ScopeExtractionService:
     def __init__(self):
         pass
 
-    def extract_scope(
+    async def extract_scope(
         self,
+        db: Session,
         tender_id: UUID,
     ) -> ScopeOfWorkResponse:
         """
-        Extract scope of work from tender documents.
-
-        Args:
-            tender_id: Tender to analyze
-
-        Returns:
-            ScopeOfWorkResponse with extracted scope information
+        Perform on-demand scope of work extraction from tender documents.
         """
-        # TODO: Fetch tender documents from ScrapedTender
-        # TODO: Parse documents and extract scope of work using LLM
+        # 1. Fetch tender and document path
+        repo = TenderIQRepository(db)
+        tender = repo.get_tender_by_id(tender_id)
+        if not tender or not tender.files:
+            raise ValueError("Tender or associated documents not found.")
+        file_path = tender.files[0].dms_path
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Document file not found at path: {file_path}")
 
-        # Sample scope data for demonstration
-        sample_scope_text = """
-        Design and implement a cloud-based document management system with:
-        - User authentication and authorization
-        - Document storage and versioning
-        - Full-text search capability
-        - Automated backup and disaster recovery
-        - API for third-party integrations
-        """
+        # 2. Parse document text
+        doc_parser = DocumentParser()
+        raw_text, _, _ = await doc_parser._extract_text(file_path)
 
-        # Extract work items, deliverables, and dates
-        work_items = self.extract_work_items(sample_scope_text)
-        deliverables = self.extract_deliverables(sample_scope_text)
-        effort_estimate = self.estimate_effort(sample_scope_text, work_items)
+        # 3. Analyze scope of work
+        scope_analyzer = ScopeOfWorkAnalyzer()
+        scope_data = await scope_analyzer.analyze_scope(db, uuid4(), raw_text)
 
-        # Calculate key dates
+        # 4. Map result to the response model
+        work_items = [
+            WorkItemResponse(
+                id=uuid4(),
+                description=item.get("description", "N/A"),
+                estimated_duration=f"{item.get('estimatedDays', 0)} days",
+                priority=item.get("complexity", "medium"),
+                dependencies=[],
+            )
+            for item in scope_data.get("work_items", [])
+        ]
+
+        total_effort = scope_data.get("total_effort_days", 0)
         start_date = datetime.now()
-        end_date = start_date + timedelta(days=effort_estimate["estimated_days"])
-
+        end_date = start_date + timedelta(days=total_effort)
         key_dates = KeyDatesResponse(
             start_date=start_date.strftime("%Y-%m-%d"),
             end_date=end_date.strftime("%Y-%m-%d"),
         )
 
+        scope_detail = ScopeOfWorkDetailResponse(
+            description="Scope of work extracted from tender document.",
+            work_items=work_items,
+            key_deliverables=[],  # New analyzer does not extract this directly
+            estimated_total_effort=total_effort,
+            estimated_total_duration=f"{scope_data.get('estimated_duration_months', 0)} months",
+            key_dates=key_dates,
+        )
+
         return ScopeOfWorkResponse(
             tender_id=tender_id,
-            scope_of_work=ScopeOfWorkDetailResponse(
-                description=sample_scope_text.strip(),
-                work_items=work_items,
-                key_deliverables=deliverables,
-                estimated_total_effort=effort_estimate["estimated_days"],
-                estimated_total_duration=effort_estimate["estimated_duration_text"],
-                key_dates=key_dates,
-            ),
+            scope_of_work=scope_detail,
             analyzed_at=datetime.utcnow(),
         )
 

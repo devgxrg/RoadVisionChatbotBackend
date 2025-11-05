@@ -9,7 +9,11 @@ from uuid import UUID
 from datetime import datetime
 from sqlalchemy.orm import Session
 
-from app.modules.tenderiq.db.repository import AnalyzeRepository
+from app.modules.tenderiq.db.tenderiq_repository import TenderIQRepository
+from app.modules.tenderiq.services.document_parser import DocumentParser
+from app.modules.tenderiq.services.tender_info_extractor import TenderInfoExtractor
+from app.modules.tenderiq.services.onepager_generator import OnePagerGenerator
+from app.modules.tenderiq.analyze.models.structured_extraction_models import OnePagerData
 from app.modules.tenderiq.models.pydantic_models import (
     OnePagerResponse,
     DataSheetResponse,
@@ -28,8 +32,9 @@ class ReportGenerationService:
     def __init__(self):
         pass
 
-    def generate_one_pager(
+    async def generate_one_pager(
         self,
+        db: Session,
         tender_id: UUID,
         format: str = "markdown",
         include_risk_assessment: bool = True,
@@ -38,31 +43,37 @@ class ReportGenerationService:
         max_length: int = 800,
     ) -> OnePagerResponse:
         """
-        Generate a one-page executive summary of the analysis.
-
-        Args:
-            tender_id: Tender ID
-            format: Output format: "markdown", "html", or "pdf"
-            include_risk_assessment: Include risk summary
-            include_scope_of_work: Include scope summary
-            include_financials: Include financial information
-            max_length: Maximum word count
-
-        Returns:
-            OnePagerResponse with generated document
+        Generate a one-page executive summary by running an on-demand analysis.
         """
-        # TODO: Fetch analysis results from repo
-        # TODO: Fetch tender data from ScrapedTender table
-        # For now, generate sample one-pager
+        import os
+        
+        # 1. Fetch tender and document path
+        repo = TenderIQRepository(db)
+        tender = repo.get_tender_by_id(tender_id)
+        if not tender or not tender.files:
+            raise ValueError("Tender or associated documents not found.")
+        file_path = tender.files[0].dms_path
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Document file not found at path: {file_path}")
 
-        one_pager_content = self._generate_sample_one_pager(
-            tender_id=tender_id,
-            include_risk=include_risk_assessment,
-            include_scope=include_scope_of_work,
-            include_financial=include_financials,
+        # 2. Parse document text
+        doc_parser = DocumentParser()
+        raw_text, _, _ = await doc_parser._extract_text(file_path)
+
+        # 3. Extract info and generate onepager data
+        info_extractor = TenderInfoExtractor()
+        onepager_generator = OnePagerGenerator()
+
+        tender_info = await info_extractor.extract_tender_info(db, uuid4(), raw_text)
+        onepager_data = await onepager_generator.generate_onepager(
+            db=db,
+            analysis_id=uuid4(),
+            raw_text=raw_text,
+            extracted_tender_info=tender_info.model_dump()
         )
 
-        # Format the content
+        # 4. Format the structured data into markdown
+        one_pager_content = self._format_one_pager_from_data(tender_id, onepager_data)
         formatted_content = self.format_for_output(one_pager_content, format)
 
         return OnePagerResponse(
@@ -172,60 +183,67 @@ class ReportGenerationService:
 
     # ==================== Helper Methods ====================
 
-    def _generate_sample_one_pager(
-        self,
-        tender_id: UUID,
-        include_risk: bool = True,
-        include_scope: bool = True,
-        include_financial: bool = True,
-    ) -> str:
-        """Generate sample one-pager content in markdown"""
+    def _format_one_pager_from_data(self, tender_id: UUID, data: OnePagerData) -> str:
+        """Formats the structured OnePagerData into a markdown string."""
         lines = [
             "# Tender Analysis Executive Summary",
             f"\n**Tender ID:** {tender_id}",
             f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            "\n## Overview",
-            "Cloud Infrastructure Migration Project for Ministry of Technology.",
-            "Estimated project duration: 120 days with high complexity level.",
         ]
 
-        if include_financial:
-            lines.extend([
-                "\n## Financial Summary",
-                "- **Estimated Value:** ₹50,00,000",
-                "- **EMD:** ₹2,50,000",
-                "- **Budget Security:** Required",
-            ])
+        # Project Overview
+        if data.projectOverview:
+            lines.append("\n## Project Overview")
+            lines.append(data.projectOverview.description)
+            if data.projectOverview.keyHighlights:
+                lines.append("\n**Key Highlights:**")
+                lines.extend([f"- {h}" for h in data.projectOverview.keyHighlights])
+            if data.projectOverview.projectScope:
+                lines.append(f"\n**Scope:** {data.projectOverview.projectScope}")
 
-        if include_scope:
-            lines.extend([
-                "\n## Scope of Work",
-                "- Design cloud architecture (3-4 weeks)",
-                "- Migrate legacy systems (4-5 weeks)",
-                "- Performance optimization (2-3 weeks)",
-                "- Testing and UAT (2-3 weeks)",
-                "- Go-live support (1-2 weeks)",
-            ])
+        # Financials
+        if data.financialRequirements:
+            fr = data.financialRequirements
+            lines.append("\n## Financial Summary")
+            if fr.contractValue:
+                lines.append(f"- **Contract Value:** {fr.contractValue.displayText}")
+            if fr.emdAmount:
+                lines.append(f"- **EMD:** {fr.emdAmount.displayText} ({fr.emdPercentage}%)")
+            if fr.performanceBankGuarantee:
+                lines.append(f"- **PBG:** {fr.performanceBankGuarantee.displayText} ({fr.pbgPercentage}%)")
 
-        if include_risk:
-            lines.extend([
-                "\n## Key Risks",
-                "- **Critical:** Complex system integration required",
-                "- **High:** Tight timeline for migration window",
-                "- **Medium:** Resource availability during peak periods",
-                "\n**Risk Score:** 65/100 (Medium-High Risk)",
-            ])
+        # Eligibility
+        if data.eligibilityHighlights:
+            eh = data.eligibilityHighlights
+            lines.append("\n## Eligibility")
+            if eh.minimumExperience:
+                lines.append(f"- **Experience:** {eh.minimumExperience}")
+            if eh.minimumTurnover:
+                lines.append(f"- **Turnover:** {eh.minimumTurnover.displayText}")
 
+        # Key Dates
+        if data.keyDates:
+            kd = data.keyDates
+            lines.append("\n## Key Dates & Duration")
+            if kd.bidSubmissionDeadline:
+                lines.append(f"- **Submission Deadline:** {kd.bidSubmissionDeadline}")
+            if kd.projectDuration:
+                lines.append(f"- **Project Duration:** {kd.projectDuration.displayText}")
+
+        # Risks
+        if data.riskFactors:
+            rf = data.riskFactors
+            lines.append(f"\n## Risk Assessment")
+            lines.append(f"**Overall Risk Level:** {rf.level.upper()}")
+            if rf.factors:
+                lines.append("\n**Key Factors:**")
+                lines.extend([f"- {f}" for f in rf.factors])
+        
         lines.extend([
-            "\n## Recommendations",
-            "1. Establish dedicated project team with DevOps expertise",
-            "2. Create detailed migration plan with rollback procedures",
-            "3. Schedule regular stakeholder reviews and risk assessments",
-            "4. Plan adequate testing and validation phases",
             "\n---",
             "*This is an automated analysis. Please review with domain experts.*",
         ])
-
+        
         return "\n".join(lines)
 
     def _markdown_to_html(self, markdown_content: str) -> str:
