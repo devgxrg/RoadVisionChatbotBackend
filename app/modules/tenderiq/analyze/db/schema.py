@@ -7,6 +7,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
 from app.db.database import Base
+from app.modules.tenderiq.db.schema import Tender
 
 
 class AnalysisStatusEnum(str, enum.Enum):
@@ -37,7 +38,7 @@ class RiskCategoryEnum(str, enum.Enum):
 class TenderAnalysis(Base):
     __tablename__ = 'tender_analysis'
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tender_id = Column(UUID(as_uuid=True), ForeignKey('tenders.id'))
+    tender_id = Column(UUID(as_uuid=True), ForeignKey(Tender.id))
     user_id = Column(UUID(as_uuid=True), ForeignKey('users.id'), nullable=False, index=True)
     
     status = Column(SQLAlchemyEnum(AnalysisStatusEnum), default=AnalysisStatusEnum.pending, index=True)
