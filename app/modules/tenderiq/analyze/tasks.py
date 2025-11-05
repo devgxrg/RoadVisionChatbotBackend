@@ -70,7 +70,7 @@ class AnalysisTaskProcessor:
         self.scope_service = ScopeExtractionService()
         self.report_service = ReportGenerationService()
 
-    def process_analysis(self, analysis_id: UUID) -> bool:
+    async def process_analysis(self, analysis_id: UUID) -> bool:
         """
         Process a tender analysis end-to-end with all Phase 1-5 services.
 
@@ -135,7 +135,7 @@ class AnalysisTaskProcessor:
             )
 
             try:
-                tender_info = self.tender_info_extractor.extract_tender_info(
+                tender_info = await self.tender_info_extractor.extract_tender_info(
                     db=db,
                     analysis_id=analysis_id,
                     raw_text=raw_text if raw_text else "",
@@ -155,7 +155,7 @@ class AnalysisTaskProcessor:
             )
 
             try:
-                onepager_data = self.onepager_generator.generate_onepager(
+                onepager_data = await self.onepager_generator.generate_onepager(
                     db=db,
                     analysis_id=analysis_id,
                     raw_text=raw_text if raw_text else "",
@@ -175,7 +175,7 @@ class AnalysisTaskProcessor:
 
             scope_result = None
             try:
-                scope_result = self.scope_analyzer.analyze_scope(
+                scope_result = await self.scope_analyzer.analyze_scope(
                     db=db,
                     analysis_id=analysis_id,
                     raw_text=raw_text if raw_text else "",
@@ -197,7 +197,7 @@ class AnalysisTaskProcessor:
 
             rfp_result = None
             try:
-                rfp_result = self.rfp_analyzer.analyze_rfp_sections(
+                rfp_result = await self.rfp_analyzer.analyze_rfp_sections(
                     db=db,
                     analysis_id=analysis_id,
                     raw_text=raw_text if raw_text else "",
@@ -392,7 +392,7 @@ class AnalysisTaskProcessor:
                 )
 
                 try:
-                    risk_response = self.risk_service.assess_risks(
+                    risk_response = await self.risk_service.assess_risks(
                         db=db,
                         analysis_id=analysis_id,
                         tender_id=analysis.tender_id,
@@ -413,7 +413,7 @@ class AnalysisTaskProcessor:
                 )
 
                 try:
-                    rfp_response = self.rfp_service.extract_rfp_sections(
+                    rfp_response = await self.rfp_service.extract_rfp_sections(
                         db=db,
                         analysis_id=analysis_id,
                         tender_id=analysis.tender_id,
@@ -434,7 +434,7 @@ class AnalysisTaskProcessor:
                 )
 
                 try:
-                    scope_response = self.scope_service.extract_scope(
+                    scope_response = await self.scope_service.extract_scope(
                         db=db,
                         analysis_id=analysis_id,
                         tender_id=analysis.tender_id,
@@ -453,7 +453,7 @@ class AnalysisTaskProcessor:
             )
 
             try:
-                one_pager = self.report_service.generate_one_pager(
+                one_pager = await self.report_service.generate_one_pager(
                     db=db,
                     analysis_id=analysis_id,
                     tender_id=analysis.tender_id,
@@ -512,7 +512,7 @@ def process_analysis_sync(analysis_id: UUID) -> bool:
     Returns:
         True if successful, False otherwise
     """
-    return task_processor.process_analysis(analysis_id)
+    return asyncio.run(task_processor.process_analysis(analysis_id))
 
 
 async def process_analysis_async(analysis_id: UUID) -> bool:
@@ -527,5 +527,5 @@ async def process_analysis_async(analysis_id: UUID) -> bool:
     Returns:
         True if successful, False otherwise
     """
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, process_analysis_sync, analysis_id)
+    # The main processor is now async, so we can await it directly.
+    return await task_processor.process_analysis(analysis_id)
