@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.db.database import SessionLocal
 from app.modules.tenderiq.analyze.db.repository import AnalyzeRepository
 from app.modules.tenderiq.analyze.db.schema import AnalysisStatusEnum
+from app.modules.tenderiq.analyze.services.document_parser import DocumentParser
 from app.modules.tenderiq.analyze.services.risk_assessment_service import RiskAssessmentService
 from app.modules.tenderiq.analyze.services.rfp_extraction_service import RFPExtractionService
 from app.modules.tenderiq.analyze.services.scope_extraction_service import ScopeExtractionService
@@ -26,6 +27,7 @@ class AnalysisTaskProcessor:
     """Processes tender analysis tasks asynchronously"""
 
     def __init__(self):
+        self.document_parser = DocumentParser()
         self.risk_service = RiskAssessmentService()
         self.rfp_service = RFPExtractionService()
         self.scope_service = ScopeExtractionService()
@@ -36,6 +38,7 @@ class AnalysisTaskProcessor:
         Process a tender analysis end-to-end.
 
         This method orchestrates all analysis services:
+        0. Document parsing and text extraction (Phase 1) - TODO: Integrate when file path available
         1. Risk assessment
         2. RFP section extraction
         3. Scope of work extraction
