@@ -1,13 +1,15 @@
 import uuid
 import enum
 from datetime import datetime
+from typing import Optional, List
 from sqlalchemy import (Column, String, DateTime, ForeignKey, Text, JSON,
                         Integer, Boolean, Enum as SQLAlchemyEnum)
 from sqlalchemy.dialects import postgresql
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, Mapped, mapped_column
 
 from app.db.database import Base
 from app.modules.tenderiq.db.schema import Tender
+from .models.pydantic_models import OnePagerSchema, ScopeOfWorkSchema, DataSheetSchema
 
 
 class AnalysisStatusEnum(str, enum.Enum):
@@ -25,32 +27,32 @@ class TenderAnalysis(Base):
     Maintains a one-to-one relationship with a Tender.
     """
     __tablename__ = 'tender_analysis'
-    id = Column(postgresql.UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(postgresql.UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     
     # One-to-one relationship to the Tender being analyzed
-    tender_id = Column(postgresql.UUID(as_uuid=True), ForeignKey(Tender.id), nullable=False, unique=True, index=True)
+    tender_id: Mapped[uuid.UUID] = mapped_column(postgresql.UUID(as_uuid=True), ForeignKey(Tender.id), nullable=False, unique=True, index=True)
     
     # Analysis metadata
-    status = Column(SQLAlchemyEnum(AnalysisStatusEnum), default=AnalysisStatusEnum.pending, nullable=False, index=True)
-    progress = Column(Integer, default=0, nullable=False) # Percentage, e.g., 0-100
-    status_message = Column(String(255), nullable=True) # e.g., "Parsing document 1 of 3..."
-    error_message = Column(Text, nullable=True)
+    status: Mapped[AnalysisStatusEnum] = mapped_column(SQLAlchemyEnum(AnalysisStatusEnum), default=AnalysisStatusEnum.pending, nullable=False, index=True)
+    progress: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    status_message: Mapped[Optional[str]] = mapped_column(String(255))
+    error_message: Mapped[Optional[str]] = mapped_column(Text)
     
     # Timestamps
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
-    analysis_started_at = Column(DateTime, nullable=True)
-    analysis_completed_at = Column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    analysis_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    analysis_completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     
-    # Analysis Results (stored as JSON for flexibility with LLM outputs)
-    one_pager_json = Column(JSON, nullable=True)
-    scope_of_work_json = Column(JSON, nullable=True)
-    data_sheet_json = Column(JSON, nullable=True)
+    # Type-hinted Analysis Results
+    one_pager_json: Mapped[Optional[OnePagerSchema]] = mapped_column(JSON)
+    scope_of_work_json: Mapped[Optional[ScopeOfWorkSchema]] = mapped_column(JSON)
+    data_sheet_json: Mapped[Optional[DataSheetSchema]] = mapped_column(JSON)
 
     # Relationships
-    tender = relationship("Tender", backref="analysis", uselist=False)
-    rfp_sections = relationship("AnalysisRFPSection", back_populates="analysis", cascade="all, delete-orphan")
-    document_templates = relationship("AnalysisDocumentTemplate", back_populates="analysis", cascade="all, delete-orphan")
+    tender: Mapped["Tender"] = relationship(backref="analysis", uselist=False)
+    rfp_sections: Mapped[List["AnalysisRFPSection"]] = relationship(back_populates="analysis", cascade="all, delete-orphan")
+    document_templates: Mapped[List["AnalysisDocumentTemplate"]] = relationship(back_populates="analysis", cascade="all, delete-orphan")
 
 
 class AnalysisRFPSection(Base):
@@ -59,18 +61,18 @@ class AnalysisRFPSection(Base):
     Each row represents one section of the tender document.
     """
     __tablename__ = 'analysis_rfp_sections'
-    id = Column(postgresql.UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    analysis_id = Column(postgresql.UUID(as_uuid=True), ForeignKey('tender_analysis.id'), nullable=False, index=True)
+    id: Mapped[uuid.UUID] = mapped_column(postgresql.UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    analysis_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('tender_analysis.id'), index=True)
     
-    section_number = Column(String(50), nullable=True) # e.g., "1.1", "2.3.a"
-    section_title = Column(String(255), nullable=False)
-    summary = Column(Text, nullable=True)
-    key_requirements = Column(JSON, nullable=True) # List of extracted requirements
-    compliance_issues = Column(JSON, nullable=True) # List of potential compliance issues
-    page_references = Column(JSON, nullable=True) # List of page numbers where this section appears
+    section_number: Mapped[Optional[str]] = mapped_column(String(50))
+    section_title: Mapped[str] = mapped_column(String(255))
+    summary: Mapped[Optional[str]] = mapped_column(Text)
+    key_requirements: Mapped[Optional[list]] = mapped_column(JSON)
+    compliance_issues: Mapped[Optional[list]] = mapped_column(JSON)
+    page_references: Mapped[Optional[list]] = mapped_column(JSON)
 
     # Relationships
-    analysis = relationship("TenderAnalysis", back_populates="rfp_sections")
+    analysis: Mapped["TenderAnalysis"] = relationship(back_populates="rfp_sections")
 
 
 class AnalysisDocumentTemplate(Base):
@@ -78,14 +80,14 @@ class AnalysisDocumentTemplate(Base):
     Stores document templates extracted from the RFP (e.g., forms, declarations).
     """
     __tablename__ = 'analysis_document_templates'
-    id = Column(postgresql.UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    analysis_id = Column(postgresql.UUID(as_uuid=True), ForeignKey('tender_analysis.id'), nullable=False, index=True)
+    id: Mapped[uuid.UUID] = mapped_column(postgresql.UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    analysis_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('tender_analysis.id'), index=True)
     
-    template_name = Column(String(255), nullable=False)
-    description = Column(Text, nullable=True)
-    required_format = Column(String(50), nullable=True) # e.g., "PDF", "Word Document"
-    content_preview = Column(Text, nullable=True) # A snippet or summary of the template
-    page_references = Column(JSON, nullable=True) # List of page numbers
+    template_name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    required_format: Mapped[Optional[str]] = mapped_column(String(50))
+    content_preview: Mapped[Optional[str]] = mapped_column(Text)
+    page_references: Mapped[Optional[list]] = mapped_column(JSON)
 
     # Relationships
-    analysis = relationship("TenderAnalysis", back_populates="document_templates")
+    analysis: Mapped["TenderAnalysis"] = relationship(back_populates="document_templates")
