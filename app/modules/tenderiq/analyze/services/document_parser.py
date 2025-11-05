@@ -231,7 +231,7 @@ class DocumentParser:
             if self._is_section_header(stripped):
                 # Save previous section if exists
                 if current_section:
-                    current_section['text'] = '\n'.join(section_text).strip()
+                    current_section.text = '\n'.join(section_text).strip()
                     sections.append(current_section)
 
                 # Start new section
@@ -479,13 +479,16 @@ class DocumentParser:
     def _is_section_header(self, line: str) -> bool:
         """Check if a line is likely a section header"""
         import re
-        # Patterns: "1.", "2.1", "Section 1", "1.2.3"
-        patterns = [
-            r'^\d+(\.\d+)*\s',  # Numbered: 1. or 2.1. or 1.2.3.
-            r'^[A-Z][A-Z\s]+$',  # All caps
-            r'^(Section|Chapter|Part)\s+\d+',  # Named sections
-        ]
-        return any(re.match(pattern, line, re.IGNORECASE) for pattern in patterns)
+        # Numbered patterns (case-insensitive for "Section", "Chapter", etc.)
+        if re.match(r'^\d+\.?\s', line):  # "1." or "1 " followed by space
+            return True
+        if re.match(r'^\d+(\.\d+)+\s', line):  # "2.1", "1.2.3" followed by space
+            return True
+        if re.match(r'^[A-Z][A-Z\s]+$', line):  # All caps (case-sensitive)
+            return True
+        if re.match(r'^(Section|Chapter|Part)\s+\d+', line, re.IGNORECASE):  # Named sections
+            return True
+        return False
 
     def _extract_section_number(self, line: str) -> str:
         """Extract section number from header"""
