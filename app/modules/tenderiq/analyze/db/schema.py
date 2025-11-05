@@ -176,3 +176,89 @@ class AnalysisRFPSection(Base):
 
     # Relationships
     analysis = relationship("TenderAnalysis", back_populates="rfp_sections")
+
+
+class TenderExtractedContent(Base):
+    """
+    Extracted and processed content from tender documents.
+
+    Stores:
+    - Raw extracted text from PDF
+    - Identified document structure (sections, tables, figures)
+    - Extraction quality metrics (OCR confidence, completeness)
+    - Parsed content for each section
+    """
+    __tablename__ = "tender_extracted_content"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    analysis_id = Column(UUID(as_uuid=True), ForeignKey("tender_analyses.id"), nullable=False, unique=True, index=True)
+
+    # Document metadata
+    original_filename = Column(String(500), nullable=False)
+    file_size = Column(Integer, nullable=False)  # In bytes
+    file_type = Column(String(50), nullable=False)  # e.g., "application/pdf"
+    page_count = Column(Integer, nullable=False)
+    uploaded_at = Column(DateTime, nullable=False)
+
+    # Extracted content
+    raw_text = Column(Text, nullable=False)  # Full extracted text
+    sections = Column(JSON, default={})  # {section_number: text, ...}
+    tables = Column(JSON, default=[])  # [{table_data, location, page}]
+    figures = Column(JSON, default=[])  # [{figure_type, description, page}]
+
+    # Extraction metadata
+    extraction_quality = Column(Float, default=0.0)  # 0-100 confidence
+    ocr_required = Column(Boolean, default=False)  # Was OCR used?
+    ocr_confidence = Column(Float, nullable=True)  # 0-100 if OCR was used
+    extractable_sections = Column(Integer, default=0)  # Number of sections found
+
+    # Processing status
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    extraction_started_at = Column(DateTime, nullable=True)
+    extraction_completed_at = Column(DateTime, nullable=True)
+
+    # Relationships
+    analysis = relationship("TenderAnalysis", cascade="all, delete-orphan")
+
+
+class ExtractionQualityMetrics(Base):
+    """
+    Quality assessment metrics for document extraction.
+
+    Stores:
+    - Data completeness score
+    - Confidence levels per major field
+    - Warnings about data quality
+    - Recommendations for improving extraction
+    """
+    __tablename__ = "extraction_quality_metrics"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    analysis_id = Column(UUID(as_uuid=True), ForeignKey("tender_analyses.id"), nullable=False, unique=True, index=True)
+
+    # Quality scores
+    data_completeness = Column(Float, default=0.0)  # 0-100: how much data was extracted
+    overall_confidence = Column(Float, default=0.0)  # 0-100: confidence in extraction quality
+
+    # Section-wise confidence
+    tender_info_confidence = Column(Float, default=0.0)
+    financial_confidence = Column(Float, default=0.0)
+    scope_confidence = Column(Float, default=0.0)
+    rfp_sections_confidence = Column(Float, default=0.0)
+    eligibility_confidence = Column(Float, default=0.0)
+
+    # Quality warnings and recommendations
+    warnings = Column(JSON, default=[])  # List of warning strings
+    recommendations = Column(JSON, default=[])  # List of recommendation strings
+
+    # Extraction summary
+    sections_extracted = Column(Integer, default=0)
+    tables_extracted = Column(Integer, default=0)
+    figures_extracted = Column(Integer, default=0)
+    annexures_identified = Column(Integer, default=0)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    # Relationships
+    analysis = relationship("TenderAnalysis", cascade="all, delete-orphan")
