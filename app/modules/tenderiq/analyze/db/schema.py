@@ -9,7 +9,7 @@ from sqlalchemy.orm import relationship, Mapped, mapped_column
 
 from app.db.database import Base
 from app.modules.tenderiq.db.schema import Tender
-from .models.pydantic_models import OnePagerSchema, ScopeOfWorkSchema, DataSheetSchema
+from ..models.pydantic_models import OnePagerSchema, ScopeOfWorkSchema, DataSheetSchema
 
 
 class AnalysisStatusEnum(str, enum.Enum):
