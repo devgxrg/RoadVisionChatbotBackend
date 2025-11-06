@@ -7,7 +7,7 @@ from app.celery_app import celery_app
 from app.db.database import SessionLocal
 from .db.repository import AnalyzeRepository
 from .events import publish_update
-from .schema import AnalysisStatusEnum
+from .db.schema import AnalysisStatusEnum
 from .services.document_parsing_service import DocumentParsingService
 
 async def _run_analysis_async(analysis_id: uuid.UUID):
