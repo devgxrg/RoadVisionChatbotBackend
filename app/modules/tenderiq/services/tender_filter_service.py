@@ -44,38 +44,28 @@ class TenderFilterService:
             return None
         return tender
 
-    def get_wishlisted_tenders(self, db: Session) -> list[Tender]:
-        """Gets all tenders that are wishlisted."""
+    def _get_tenders_by_flag(self, db: Session, flag_name: str) -> list[Tender]:
+        """Helper to get all tenders where a specific boolean flag is set."""
         tender_repo = TenderRepository(db)
         scraped_tender_repo = TenderIQRepository(db)
         
-        tenders_with_flag = tender_repo.get_tenders_by_flag('is_wishlisted')
+        tenders_with_flag = tender_repo.get_tenders_by_flag(flag_name)
         tender_ids = [t.id for t in tenders_with_flag]
         
         scraped_tenders = scraped_tender_repo.get_tenders_by_ids(tender_ids)
         return [Tender.model_validate(t) for t in scraped_tenders]
+
+    def get_wishlisted_tenders(self, db: Session) -> list[Tender]:
+        """Gets all tenders that are wishlisted."""
+        return self._get_tenders_by_flag(db, 'is_wishlisted')
 
     def get_archived_tenders(self, db: Session) -> list[Tender]:
         """Gets all tenders that are archived."""
-        tender_repo = TenderRepository(db)
-        scraped_tender_repo = TenderIQRepository(db)
-
-        tenders_with_flag = tender_repo.get_tenders_by_flag('is_archived')
-        tender_ids = [t.id for t in tenders_with_flag]
-
-        scraped_tenders = scraped_tender_repo.get_tenders_by_ids(tender_ids)
-        return [Tender.model_validate(t) for t in scraped_tenders]
+        return self._get_tenders_by_flag(db, 'is_archived')
 
     def get_favorited_tenders(self, db: Session) -> list[Tender]:
         """Gets all tenders that are marked as favorite."""
-        tender_repo = TenderRepository(db)
-        scraped_tender_repo = TenderIQRepository(db)
-
-        tenders_with_flag = tender_repo.get_tenders_by_flag('is_favorite')
-        tender_ids = [t.id for t in tenders_with_flag]
-
-        scraped_tenders = scraped_tender_repo.get_tenders_by_ids(tender_ids)
-        return [Tender.model_validate(t) for t in scraped_tenders]
+        return self._get_tenders_by_flag(db, 'is_favorite')
 
     def get_available_dates(self, db: Session) -> AvailableDatesResponse:
         """
