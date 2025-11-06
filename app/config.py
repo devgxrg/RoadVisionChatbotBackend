@@ -99,7 +99,7 @@ class Settings:
         self.REDIS_DB = int(os.getenv("REDIS_DB", self.REDIS_DB))
         self.CELERY_BROKER_URL = f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
         self.CELERY_RESULT_BACKEND_URL = f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
-        print(f"✅ Redis: configured at {self.REDIS_HOST}:{self.PORT}")
+        print(f"✅ Redis: configured at {self.REDIS_HOST}:{self.REDIS_PORT}")
 
         # Load security settings
         self.JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", self.JWT_SECRET_KEY)

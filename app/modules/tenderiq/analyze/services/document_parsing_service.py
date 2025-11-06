@@ -11,17 +11,21 @@ from app.modules.tenderiq.db.tenderiq_repository import TenderIQRepository
 from app.modules.askai.db.repository import ChatRepository
 from app.modules.askai.services.document_service import PDFProcessor
 from app.db.vector_store import VectorStoreManager
+from app.core.services import pdf_processor, vector_store
 
 class DocumentParsingService:
     """Orchestrates document parsing, text extraction, and vectorization."""
 
-    def __init__(self, db: Session):
+    def __init__(
+        self,
+        db: Session,
+    ):
         self.db = db
         self.analyze_repo = AnalyzeRepository(self.db)
         self.tender_repo = TenderIQRepository(self.db)
         self.chat_repo = ChatRepository(self.db)
-        self.pdf_processor = PDFProcessor()
-        self.vector_store = VectorStoreManager()
+        self.pdf_processor = pdf_processor
+        self.vector_store = vector_store
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,
             chunk_overlap=200,
