@@ -44,8 +44,15 @@ async def _run_analysis_async(analysis_id: uuid.UUID):
         publish_update(analysis_id, "control", "close", event_type="control")
 
     except Exception as e:
-        repo.update(analysis, {"status": AnalysisStatusEnum.failed, "error_message": str(e)})
-        publish_update(analysis_id, "error", {"message": str(e)}, event_type="error")
+        # Log the full traceback to the Celery worker's output for debugging
+        detailed_error = traceback.format_exc()
+        logging.error(f"Tender analysis failed for analysis_id {analysis_id}:\n{detailed_error}")
+
+        # Provide a user-friendly error message to the DB and frontend
+        user_error_message = f"An unexpected error occurred: {type(e).__name__}"
+        
+        repo.update(analysis, {"status": AnalysisStatusEnum.failed, "error_message": user_error_message})
+        publish_update(analysis_id, "error", {"message": user_error_message}, event_type="error")
         publish_update(analysis_id, "control", "close", event_type="control")
     finally:
         db.close()
