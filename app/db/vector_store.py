@@ -129,6 +129,17 @@ class VectorStoreManager:
         except Exception as e:
             print(f"⚠️  Error deleting Weaviate collection: {e}")
 
+    def create_tender_collection(self, tender_id: str):
+        pass
+
+    def add_tender_chunks(self, tender_id: str, chunks: List[Dict]):
+        pass
+
+    def query_tender(self, tender_id: str, query: str, n_results: int = settings.RAG_TOP_K):
+        pass
+
+    def delete_tender_collection(self, tender_id: str):
+        pass
     # --- Renamed ChromaDB Methods for Backup ---
     
     def get_or_create_collection_chroma(self, chat_id: str):
