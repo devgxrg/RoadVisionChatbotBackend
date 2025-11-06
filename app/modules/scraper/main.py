@@ -17,6 +17,7 @@ import os
 # Local modules
 from app.db.database import SessionLocal
 from app.modules.scraper.db.repository import ScraperRepository
+from app.modules.tenderiq.db.repository import TenderRepository
 from .detail_page_scrape import scrape_tender
 from .process_tender import start_tender_processing
 # from .drive import authenticate_google_drive, download_folders, get_shareable_link, upload_folder_to_drive
@@ -140,6 +141,7 @@ def scrape_link(link: str, source_priority: str = "normal", skip_dedup_check: bo
         db = SessionLocal()
         try:
             scraper_repo = ScraperRepository(db)
+            tender_repo = TenderRepository(db)
             
             # DMS Integration is done first to prepare folders and get the canonical release date
             with ScrapeSection(tracker, "DMS Integration"):
@@ -152,51 +154,78 @@ def scrape_link(link: str, source_priority: str = "normal", skip_dedup_check: bo
                 scrape_run, query_map = scraper_repo.create_scrape_run_shell(homepage, tender_release_date)
                 logger.info(f"✅ ScrapeRun created with ID: {scrape_run.id}")
 
-            # Create progress bar for detail page scraping
+            # --- STAGE 1: Scrape Details & Populate Database ---
             total_tenders = sum(len(q.tenders) for q in homepage.query_table)
-            detail_progress = tracker.create_detail_scrape_progress_bar(total_tenders)
+            scrape_progress = tracker.create_detail_scrape_progress_bar(total_tenders)
 
-            with ScrapeSection(tracker, "Detail Page Scraping, DB Save & Analysis"):
+            with ScrapeSection(tracker, "Detail Page Scraping & DB Save"):
                 for query_data in homepage.query_table:
                     query_orm = query_map[query_data.query_name]
-                    query_progress = tracker.create_query_progress_bar(query_data.query_name, len(query_data.tenders))
-                    
+                    query_progress = tracker.create_query_progress_bar(f"Scraping {query_data.query_name}", len(query_data.tenders))
+
                     tenders_to_remove = []
                     for tender_data in query_data.tenders:
                         try:
                             # 1. Scrape detail page
                             logger.debug(f"🎯 Scraping detail page for: {tender_data.tender_name}")
                             tender_data.details = scrape_tender(tender_data.tender_url)
-                            logger.debug(f"✅ Detail page scraped: {tender_data.tender_name}")
-                            
-                            # 2. Populate scraped_tenders table
-                            logger.debug(f"💾 Saving tender to DB: {tender_data.tender_name}")
-                            scraper_repo.add_scraped_tender_details(query_orm, tender_data, tender_release_date)
-                            logger.debug(f"✅ Tender saved to DB.")
+                            logger.debug(f"✅ Detail page scraped.")
 
-                            # 3. Start the analysis process for the scraped tender details
-                            if tender_data.details:
-                                logger.debug(f"🔬 Starting analysis for: {tender_data.tender_name}")
-                                start_tender_processing(tender_data.details)
-                                logger.debug(f"✅ Analysis complete for: {tender_data.tender_name}")
+                            # 2. Populate scraped_tenders table
+                            logger.debug(f"💾 Saving to 'scraped_tenders': {tender_data.tender_name}")
+                            scraped_tender_orm = scraper_repo.add_scraped_tender_details(query_orm, tender_data, tender_release_date)
+                            logger.debug(f"✅ Saved to 'scraped_tenders'.")
+
+                            # 3. Populate main tenders table
+                            logger.debug(f"💾 Saving to 'tenders': {tender_data.tender_name}")
+                            tender_repo.get_or_create_by_id(scraped_tender_orm)
+                            logger.debug(f"✅ Saved to 'tenders'.")
 
                         except Exception as e:
-                            logger.warning(f"⚠️  Failed to process tender {tender_data.tender_name}: {str(e)}")
+                            logger.warning(f"⚠️  Failed to scrape or save tender {tender_data.tender_name}: {str(e)}")
                             tenders_to_remove.append(tender_data)
                             removed_tenders[tender_data.tender_id] = json.loads(
                                 tender_data.model_dump_json(indent=2)
                             )
                         
                         if query_progress: query_progress.update(1)
-                        if detail_progress: detail_progress.update(1)
+                        if scrape_progress: scrape_progress.update(1)
 
-                    # Remove tenders after iteration
+                    # Remove tenders that failed to scrape/save, so they aren't processed for analysis
                     for tender in tenders_to_remove:
                         query_data.tenders.remove(tender)
                     
                     if query_progress: query_progress.close()
             
-            if detail_progress: detail_progress.close()
+            if scrape_progress:
+                scrape_progress.close()
+
+            # --- STAGE 2: Process Tender Files for Analysis ---
+            total_tenders_to_analyze = sum(len(q.tenders) for q in homepage.query_table)
+            analysis_progress = tracker.create_analysis_progress_bar(total_tenders_to_analyze)
+
+            with ScrapeSection(tracker, "Tender File Analysis"):
+                for query_data in homepage.query_table:
+                    query_progress = tracker.create_query_progress_bar(f"Analyzing {query_data.query_name}", len(query_data.tenders))
+                    
+                    for tender_data in query_data.tenders:
+                        try:
+                            if tender_data.details:
+                                logger.debug(f"🔬 Starting analysis for: {tender_data.tender_name}")
+                                start_tender_processing(tender_data.details)
+                                logger.debug(f"✅ Analysis complete for: {tender_data.tender_name}")
+                            else:
+                                logger.warning(f"⚠️  Skipping analysis for {tender_data.tender_name}: No details available.")
+                        except Exception as e:
+                            logger.error(f"❌ Analysis failed for tender {tender_data.tender_name}: {str(e)}")
+
+                        if query_progress: query_progress.update(1)
+                        if analysis_progress: analysis_progress.update(1)
+
+                    if query_progress: query_progress.close()
+
+            if analysis_progress:
+                analysis_progress.close()
 
             if removed_tenders:
                 logger.warning(f"⚠️  Removed {len(removed_tenders)} tenders due to processing errors")
