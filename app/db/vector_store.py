@@ -160,7 +160,7 @@ class VectorStoreManager:
             vectorizer_config=wvc.Configure.Vectorizer.none(),
         )
 
-    def add_tender_chunks(self, tender_id: str, chunks: List[Dict]) -> int:
+    def add_tender_chunks(self, collection: Collection, chunks: List[Dict]) -> int:
         """
         Adds processed document chunks to a tender's specific Weaviate collection.
         This method handles vectorization and batch insertion.
@@ -169,16 +169,6 @@ class VectorStoreManager:
             return 0
 
         try:
-            # Sanitize tender_id to get the correct collection name
-            sanitized_tender_id = re.sub(r'[^a-zA-Z0-9_]', '_', tender_id)
-            collection_name = f"Tender_{sanitized_tender_id}"
-
-            if not self.client.collections.exists(collection_name):
-                print(f"❌ Collection {collection_name} does not exist. Please create it first.")
-                return 0
-            
-            collection = self.client.collections.get(collection_name)
-
             data_objects = []
             for chunk in chunks:
                 metadata = chunk.get("metadata", {})
