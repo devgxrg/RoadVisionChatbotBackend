@@ -160,8 +160,63 @@ class VectorStoreManager:
             vectorizer_config=wvc.Configure.Vectorizer.none(),
         )
 
-    def add_tender_chunks(self, tender_id: str, chunks: List[Dict]):
-        pass
+    def add_tender_chunks(self, tender_id: str, chunks: List[Dict]) -> int:
+        """
+        Adds processed document chunks to a tender's specific Weaviate collection.
+        This method handles vectorization and batch insertion.
+        """
+        if not self.client or not chunks:
+            return 0
+
+        try:
+            # Sanitize tender_id to get the correct collection name
+            sanitized_tender_id = re.sub(r'[^a-zA-Z0-9_]', '_', tender_id)
+            collection_name = f"Tender_{sanitized_tender_id}"
+
+            if not self.client.collections.exists(collection_name):
+                print(f"❌ Collection {collection_name} does not exist. Please create it first.")
+                return 0
+            
+            collection = self.client.collections.get(collection_name)
+
+            data_objects = []
+            for chunk in chunks:
+                metadata = chunk.get("metadata", {})
+                
+                # Safely get and convert chunk index
+                chunk_idx_str = metadata.get("chunk_index", metadata.get("table_index", "0"))
+                try:
+                    chunk_idx = int(chunk_idx_str)
+                except (ValueError, TypeError):
+                    chunk_idx = 0
+                
+                properties = {
+                    "content": chunk.get("content", ""),
+                    "document_name": metadata.get("source", "unknown"),
+                    "document_type": metadata.get("doc_type", "unknown"),
+                    "chunk_type": metadata.get("type", "unknown"),
+                    "page_number": str(metadata.get("page", "0")),
+                    "chunk_index": chunk_idx,
+                }
+                data_objects.append(properties)
+
+            content_for_embedding = [obj["content"] for obj in data_objects]
+            vectors = self.embedding_model.encode(content_for_embedding, show_progress_bar=True, batch_size=32)
+
+            with collection.batch.dynamic() as batch:
+                for i, data_obj in enumerate(data_objects):
+                    batch.add_object(
+                        properties=data_obj,
+                        vector=vectors[i]
+                    )
+
+            print(f"✅ Added {len(data_objects)} chunks to Weaviate collection {collection.name}")
+            return len(data_objects)
+
+        except Exception as e:
+            print(f"❌ Error adding tender chunks to Weaviate: {e}")
+            traceback.print_exc()
+            return 0
 
     def query_tender(self, tender_id: str, query: str, n_results: int = settings.RAG_TOP_K):
         pass
