@@ -2,6 +2,7 @@ from pydantic import BaseModel, ConfigDict
 from typing import Optional, List
 from uuid import UUID
 from datetime import datetime
+from enum import Enum
 
 
 # ==================== Tender Models ====================
@@ -59,6 +60,43 @@ class TenderCreate(BaseModel):
 
 
 # ==================== Request Models ====================
+
+class TenderActionType(str, Enum):
+    """Defines the types of actions that can be performed on a tender."""
+    TOGGLE_WISHLIST = "toggle_wishlist"
+    TOGGLE_FAVORITE = "toggle_favorite"
+    TOGGLE_ARCHIVE = "toggle_archive"
+    UPDATE_STATUS = "update_status"
+    UPDATE_REVIEW_STATUS = "update_review_status"
+
+class TenderStatusEnum(str, Enum):
+    """Matches the 'tender_status_enum' in the database."""
+    NEW = 'New'
+    REVIEWED = 'Reviewed'
+    SHORTLISTED = 'Shortlisted'
+    BID_PREPARATION = 'Bid_Preparation'
+    SUBMITTED = 'Submitted'
+    WON = 'Won'
+    LOST = 'Lost'
+    NOT_INTERESTED = 'Not_Interested'
+    PENDING_RESULTS = 'Pending_Results'
+
+class ReviewStatusEnum(str, Enum):
+    """Matches the 'review_status_enum' in the database."""
+    NOT_REVIEWED = 'Not_Reviewed'
+    REVIEWED = 'Reviewed'
+    SHORTLISTED = 'Shortlisted'
+
+class TenderActionPayload(BaseModel):
+    """Optional payload for actions like updating status."""
+    status: Optional[TenderStatusEnum] = None
+    review_status: Optional[ReviewStatusEnum] = None
+    notes: Optional[str] = None
+
+class TenderActionRequest(BaseModel):
+    """Request model for the new tender action endpoint."""
+    action: TenderActionType
+    payload: Optional[TenderActionPayload] = None
 
 
 # ==================== Response Models - Analysis Metadata ====================
