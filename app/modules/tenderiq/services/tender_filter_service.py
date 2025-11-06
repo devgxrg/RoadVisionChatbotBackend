@@ -15,6 +15,7 @@ from uuid import UUID
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 
+from app.modules.tenderiq.db.repository import TenderRepository
 from app.modules.tenderiq.db.tenderiq_repository import TenderIQRepository
 from app.modules.tenderiq.models.pydantic_models import (
     AvailableDatesResponse,
@@ -42,6 +43,36 @@ class TenderFilterService:
         if not tender:
             return None
         return tender
+
+    def get_wishlisted_tenders(self, db: Session) -> list[Tender]:
+        """Gets all tenders that are wishlisted."""
+        tender_repo = TenderRepository(db)
+        scraped_tender_repo = TenderIQRepository(db)
+        
+        tenders_with_flag = tender_repo.get_tenders_by_flag('is_wishlisted')
+        tender_ids = [t.id for t in tenders_with_flag]
+        
+        return scraped_tender_repo.get_tenders_by_ids(tender_ids)
+
+    def get_archived_tenders(self, db: Session) -> list[Tender]:
+        """Gets all tenders that are archived."""
+        tender_repo = TenderRepository(db)
+        scraped_tender_repo = TenderIQRepository(db)
+
+        tenders_with_flag = tender_repo.get_tenders_by_flag('is_archived')
+        tender_ids = [t.id for t in tenders_with_flag]
+
+        return scraped_tender_repo.get_tenders_by_ids(tender_ids)
+
+    def get_favorited_tenders(self, db: Session) -> list[Tender]:
+        """Gets all tenders that are marked as favorite."""
+        tender_repo = TenderRepository(db)
+        scraped_tender_repo = TenderIQRepository(db)
+
+        tenders_with_flag = tender_repo.get_tenders_by_flag('is_favorite')
+        tender_ids = [t.id for t in tenders_with_flag]
+
+        return scraped_tender_repo.get_tenders_by_ids(tender_ids)
 
     def get_available_dates(self, db: Session) -> AvailableDatesResponse:
         """

@@ -85,3 +85,12 @@ class TenderRepository:
             return datetime.strptime(date_str, "%d-%m-%Y")
         except (ValueError, TypeError):
             return None
+
+    def get_tenders_by_flag(self, flag_name: str, flag_value: bool = True) -> list[Tender]:
+        """
+        Gets all Tenders where a specific boolean flag is set to the given value.
+        """
+        if not hasattr(Tender, flag_name):
+            raise ValueError(f"'{flag_name}' is not a valid attribute of Tender model.")
+        
+        return self.db.query(Tender).filter(getattr(Tender, flag_name) == flag_value).all()
