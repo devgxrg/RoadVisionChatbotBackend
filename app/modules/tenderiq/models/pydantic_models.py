@@ -180,7 +180,6 @@ class TenderHistoryItem(BaseModel):
   update_date: str
   files_changed: Optional[List[TenderFile]]
   date_change: Optional[TenderHistoryDateChange]
-}
 
 
 class FullTenderDetails(BaseModel):
