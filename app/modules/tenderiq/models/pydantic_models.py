@@ -19,7 +19,7 @@ class TenderFile(BaseModel):
     is_cached: bool = False
     cache_status: Optional[str] = "pending"
     model_config = ConfigDict(from_attributes=True)
-    file_type: str
+    file_type: Optional[str] = "Unknown"
 
 class Tender(BaseModel):
     id: UUID
@@ -172,14 +172,14 @@ class TenderHistoryDateChange(BaseModel):
     to_date: str
 
 class TenderHistoryItem(BaseModel):
-  id: str
-  tender_id: str
-  tdr: str
-  type: TenderHistoryType
-  note: str
-  update_date: str
-  files_changed: Optional[List[TenderFile]]
-  date_change: Optional[TenderHistoryDateChange]
+    id: str
+    tender_id: str
+    tdr: str
+    type: TenderHistoryType
+    note: str
+    update_date: str
+    files_changed: Optional[List[TenderFile]]
+    date_change: Optional[TenderHistoryDateChange]
 
 
 class FullTenderDetails(BaseModel):

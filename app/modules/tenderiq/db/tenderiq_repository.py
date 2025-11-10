@@ -13,6 +13,7 @@ from uuid import UUID
 from datetime import datetime, timedelta
 from sqlalchemy import Row, Tuple
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.schema import Column
 
 from app.modules.scraper.db.schema import (
     ScrapeRun,
@@ -48,7 +49,7 @@ class TenderIQRepository:
             .first()
         )
 
-    def get_tenders_by_ids(self, tender_ids: list[UUID]) -> list[ScrapedTender]:
+    def get_tenders_by_ids(self, tender_ids: list[Column[UUID]]) -> list[ScrapedTender]:
         """
         Get a list of tenders by their UUIDs, with all relationships loaded.
         """
@@ -61,6 +62,18 @@ class TenderIQRepository:
                 joinedload(ScrapedTender.files),
                 joinedload(ScrapedTender.query)
             )
+            .all()
+        )
+
+    def get_tenders_by_ids_tenderiq(self, tender_ids: list[Column[UUID]]) -> list[Tender]:
+        """
+        Get a list of tenders from the tenders table by their UUIDs, with all relationships loaded.
+        """
+        if not tender_ids:
+            return []
+        return (
+            self.db.query(Tender)
+            .filter(Tender.id.in_(tender_ids))
             .all()
         )
 
