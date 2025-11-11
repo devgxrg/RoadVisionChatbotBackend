@@ -6,6 +6,8 @@ Integer, Boolean, Enum, Numeric, Float)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.db.database import Base
+from app.modules.auth.db.schema import User
+from app.modules.askai.db.models import Chat
 
 class Tender(Base):
     __tablename__ = 'tenders'

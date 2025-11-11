@@ -57,7 +57,7 @@ def get_daily_tenders(db: Session = Depends(get_db_session)):
     summary="SSE version of the /tenders endpoint"
 )
 def get_daily_tenders_sse(db: Session = Depends(get_db_session)):
-    return tender_service_sse.get_daily_tenders_sse(db)
+    return EventSourceResponse(tender_service_sse.get_daily_tenders_sse(db))
 
 @router.get(
     "/tenders/{tender_id}",
