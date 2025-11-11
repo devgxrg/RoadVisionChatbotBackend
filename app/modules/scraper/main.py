@@ -19,7 +19,7 @@ from app.db.database import SessionLocal
 from app.modules.scraper.db.repository import ScraperRepository
 from app.modules.tenderiq.db.repository import TenderRepository
 from .detail_page_scrape import scrape_tender
-from .process_tender import start_tender_processing
+# from .process_tender import start_tender_processing
 # from .drive import authenticate_google_drive, download_folders, get_shareable_link, upload_folder_to_drive
 from .email_sender import listen_and_get_link, listen_and_get_unprocessed_emails, send_html_email
 from .home_page_scrape import scrape_page
@@ -170,6 +170,12 @@ def scrape_link(link: str, source_priority: str = "normal", skip_dedup_check: bo
                             logger.debug(f"🎯 Scraping detail page for: {tender_data.tender_name}")
                             tender_data.details = scrape_tender(tender_data.tender_url)
                             logger.debug(f"✅ Detail page scraped.")
+
+                            # If the tender's value is less than 300 crores, do not add to database
+                            # if tender_data.details.notice.tender_value < 100000000:
+                            #     logger.debug(f"⚠️  Skipping tender due to value: {tender_data.details.notice.tender_value}")
+                            #     tenders_to_remove.append(tender_data)
+                            #     continue
 
                             # 2. Populate scraped_tenders table
                             logger.debug(f"💾 Saving to 'scraped_tenders': {tender_data.tender_name}")

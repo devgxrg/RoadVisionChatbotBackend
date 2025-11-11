@@ -1,13 +1,30 @@
 from typing import List
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, noload, selectinload
 
-from app.modules.scraper.db.schema import ScrapeRun, ScrapedTenderQuery
+from app.modules.scraper.db.schema import ScrapeRun, ScrapedTender, ScrapedTenderQuery
 
+def get_tenders_from_category(db: Session, query: ScrapedTenderQuery, offset: int, limit: int) -> List[ScrapedTender]:
+    return (
+        db.query(ScrapedTender)
+        .filter(ScrapedTender.query_id == query.id)
+        .options(joinedload(ScrapedTender.files))
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
 
 def get_all_categories(db: Session, scrape_run: ScrapeRun) -> List[ScrapedTenderQuery]:
-    scrape_run_id = ScrapeRun.id
-    return db.query(ScrapedTenderQuery).filter_by(scrape_run_id=scrape_run_id).filter(ScrapedTenderQuery.query_name.like("%Civil%")).all()
+    return (
+        db.query(ScrapedTenderQuery)
+        .filter(ScrapedTenderQuery.scrape_run_id == scrape_run.id)
+        .options(noload(ScrapedTenderQuery.tenders))
+        .all()
+    )
 
 def get_scrape_runs(db: Session) -> List[ScrapeRun]:
-    scrape_runs = db.query(ScrapeRun).all()
-    return scrape_runs
+    return (
+        db.query(ScrapeRun)
+        .order_by(ScrapeRun.tender_release_date.desc())
+        .options(noload(ScrapeRun.queries))
+        .all()
+    )

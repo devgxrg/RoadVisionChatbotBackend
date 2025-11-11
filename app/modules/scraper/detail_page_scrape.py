@@ -3,12 +3,13 @@ from bs4 import BeautifulSoup
 from bs4.element import Tag
 import requests
 
+from app.core.helpers import get_number_from_currency_string
+
 from .data_models import TenderDetailContactInformation, TenderDetailDetails, TenderDetailKeyDates, TenderDetailNotice, TenderDetailOtherDetail, TenderDetailPage, TenderDetailPageFile
 
 def notice_table_helper(search: str, rows: List[Tag]) -> str:
     for row in rows:
         if search in row.text:
-            print("Row text: " + row.text)
             return row.find_all('td')[1].text.strip()
 
     return "N/A"
@@ -46,7 +47,7 @@ def scrape_notice_table(table: Tag) -> TenderDetailNotice:
         state=notice_table_helper('State', rows),
         document_fees=notice_table_helper('Document Fees', rows),
         emd=notice_table_helper('EMD', rows),
-        tender_value=notice_table_helper('Tender Value', rows),
+        tender_value=get_number_from_currency_string(notice_table_helper('Tender Value', rows)),
         tender_type=notice_table_helper('Tender Type', rows),
         bidding_type=notice_table_helper('Bidding Type', rows),
         competition_type=notice_table_helper('Competition Type', rows)
@@ -156,7 +157,7 @@ def scrape_other_details(table: Tag) -> TenderDetailOtherDetail:
 
 
 def scrape_tender(tender_link) -> TenderDetailPage:
-    print("Scraping tender: " + tender_link)
+    # print("Scraping tender: " + tender_link)
     page = requests.get(tender_link)
     soup = BeautifulSoup(page.content, 'html.parser')
 

@@ -20,7 +20,7 @@ class TenderDetailNotice(BaseModel):
     state: str
     document_fees: str
     emd: str
-    tender_value: str
+    tender_value: float
     tender_type: str
     bidding_type: str
     competition_type: str
