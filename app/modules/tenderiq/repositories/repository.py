@@ -1,12 +1,19 @@
 from typing import List
+from sqlalchemy import Float, cast
 from sqlalchemy.orm import Session, joinedload, noload, selectinload
 
 from app.modules.scraper.db.schema import ScrapeRun, ScrapedTender, ScrapedTenderQuery
 
 def get_tenders_from_category(db: Session, query: ScrapedTenderQuery, offset: int, limit: int) -> List[ScrapedTender]:
-    return (
+    base_query = (
         db.query(ScrapedTender)
         .filter(ScrapedTender.query_id == query.id)
+    )
+
+    base_query = base_query.filter(cast(ScrapedTender.tender_value, Float) >= 100000000)
+
+    return (
+        base_query
         .options(joinedload(ScrapedTender.files))
         .offset(offset)
         .limit(limit)
