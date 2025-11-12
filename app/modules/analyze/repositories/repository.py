@@ -29,9 +29,13 @@ def get_by_tender_id(db: Session, tender_id: str) -> Optional[TenderAnalysis]:
         .first()
     )
 
-def get_by_id(db: Session, analysis_id: UUID) -> Optional[TenderAnalysis]:
+def get_by_id(db: Session, tender_id: UUID) -> Optional[TenderAnalysis]:
     """Retrieves a tender analysis record by its own ID."""
-    return db.query(TenderAnalysis).filter_by(id=analysis_id).first()
+    tender = db.query(Tender).filter_by(id=tender_id).first()
+    if not tender:
+        return None
+
+    return db.query(TenderAnalysis).filter_by(tender_id=tender.tender_ref_number).first()
 
 def create_for_tender(db: Session, tender_id: str, user_id: Optional[UUID]) -> TenderAnalysis:
     """

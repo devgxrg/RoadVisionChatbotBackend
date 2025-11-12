@@ -3,38 +3,194 @@ Pydantic schemas for the structured JSON data stored in TenderAnalysis.
 """
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any, Literal
+from datetime import datetime
+
+
+# ============================================================================
+# ONE-PAGER SCHEMAS
+# ============================================================================
+
+class RiskAnalysisSchema(BaseModel):
+    """Risk analysis within the one-pager."""
+    summary: Optional[str] = None
+    high_risk_factors: Optional[List[str]] = []
+    low_risk_areas: Optional[List[str]] = []
+    compliance_concerns: Optional[List[str]] = []
+
 
 class OnePagerSchema(BaseModel):
     """Defines the structure for the one_pager_json field."""
     project_overview: str
-    eligibility_highlights: List[str] = []
-    important_dates: List[str] = []
-    financial_requirements: List[str] = []
-    risk_analysis: Dict[str, Any] = {}
+    eligibility_highlights: List[str] = Field(default_factory=list)
+    important_dates: List[str] = Field(default_factory=list)
+    financial_requirements: List[str] = Field(default_factory=list)
+    risk_analysis: Optional[RiskAnalysisSchema] = None
 
 
-class ScopeOfWorkProjectOverviewSchema(BaseModel):
-    """Defines the nested project_overview object within the scope of work."""
+# ============================================================================
+# SCOPE OF WORK SCHEMAS
+# ============================================================================
+
+class WorkComponentSchema(BaseModel):
+    """Individual component within a work package."""
+    item: str
+    description: Optional[str] = None
+    quantity: Optional[float] = None
+    unit: Optional[str] = None
+    specifications: Optional[str] = None
+
+
+class WorkPackageSchema(BaseModel):
+    """Work package containing multiple components."""
+    id: str
     name: str
+    description: Optional[str] = None
+    components: Optional[List[WorkComponentSchema]] = Field(default_factory=list)
+    estimated_duration: Optional[str] = None
+    dependencies: Optional[List[str]] = Field(default_factory=list)
+
+
+class MaterialSpecificationSchema(BaseModel):
+    """Material specification details."""
+    material: str
+    specification: str
+    source: Optional[str] = None
+    testing_standard: Optional[str] = None
+
+
+class TechnicalSpecificationsSchema(BaseModel):
+    """Technical specifications for the project."""
+    standards: Optional[List[str]] = Field(default_factory=list)
+    quality_requirements: Optional[List[str]] = Field(default_factory=list)
+    materials_specification: Optional[List[MaterialSpecificationSchema]] = Field(default_factory=list)
+    testing_requirements: Optional[List[str]] = Field(default_factory=list)
+
+
+class DeliverableSchema(BaseModel):
+    """Project deliverable."""
+    item: str
+    description: Optional[str] = None
+    timeline: Optional[str] = None
+
+
+class ScopeOfWorkProjectDetailsSchema(BaseModel):
+    """Project details within scope of work."""
+    project_name: Optional[str] = None
     location: Optional[str] = None
     total_length: Optional[str] = None
+    total_area: Optional[str] = None
     duration: Optional[str] = None
-    value: Optional[str] = None
+    contract_value: Optional[str] = None
 
 
 class ScopeOfWorkSchema(BaseModel):
     """Defines the structure for the scope_of_work_json field."""
-    project_overview: ScopeOfWorkProjectOverviewSchema
-    major_work_components: List[str] = []
-    technical_standards_and_specifications: List[str] = []
+    project_details: Optional[ScopeOfWorkProjectDetailsSchema] = None
+    work_packages: Optional[List[WorkPackageSchema]] = Field(default_factory=list)
+    technical_specifications: Optional[TechnicalSpecificationsSchema] = None
+    deliverables: Optional[List[DeliverableSchema]] = Field(default_factory=list)
+    exclusions: Optional[List[str]] = Field(default_factory=list)
+
+
+# ============================================================================
+# DATA SHEET SCHEMAS
+# ============================================================================
+
+class DataSheetItemSchema(BaseModel):
+    """Individual item in a datasheet section."""
+    label: str
+    value: str
+    type: Optional[str] = None  # e.g., 'money', 'date'
+    highlight: Optional[bool] = False
 
 
 class DataSheetSchema(BaseModel):
     """Defines the structure for the data_sheet_json field."""
-    key_tender_details: Dict[str, Any] = {}
-    financial_summary: Dict[str, Any] = {}
-    timeline: Dict[str, Any] = {}
+    project_information: Optional[List[DataSheetItemSchema]] = Field(default_factory=list)
+    contract_details: Optional[List[DataSheetItemSchema]] = Field(default_factory=list)
+    financial_details: Optional[List[DataSheetItemSchema]] = Field(default_factory=list)
+    technical_summary: Optional[List[DataSheetItemSchema]] = Field(default_factory=list)
+    important_dates: Optional[List[DataSheetItemSchema]] = Field(default_factory=list)
 
+
+# ============================================================================
+# RFP SECTION SCHEMAS
+# ============================================================================
+
+class RFPSectionSchema(BaseModel):
+    """Single RFP section with detailed analysis."""
+    section_number: str
+    section_name: str
+    summary: Optional[str] = None
+    key_points: Optional[List[str]] = Field(default_factory=list)
+    critical_requirements: Optional[List[str]] = Field(default_factory=list)
+    considerations: Optional[List[str]] = Field(default_factory=list)
+    risks: Optional[List[str]] = Field(default_factory=list)
+    action_items: Optional[List[str]] = Field(default_factory=list)
+    documents: Optional[List[str]] = Field(default_factory=list)
+
+
+class RFPSummarySchema(BaseModel):
+    """Summary statistics of RFP sections."""
+    total_sections: Optional[int] = None
+    total_requirements: Optional[int] = None
+    criticality: Optional[Dict[str, int]] = None
+
+
+class RFPSectionsResponseSchema(BaseModel):
+    """Complete RFP sections analysis."""
+    rfp_summary: Optional[RFPSummarySchema] = None
+    sections: Optional[List[RFPSectionSchema]] = Field(default_factory=list)
+
+
+# ============================================================================
+# DOCUMENT TEMPLATE SCHEMAS
+# ============================================================================
+
+class DocumentTemplateSchema(BaseModel):
+    """Single document template."""
+    id: str
+    name: str
+    description: Optional[str] = None
+    format: str
+    downloadUrl: Optional[str] = None
+    mandatory: bool = True
+    annex: Optional[str] = None
+
+
+class TemplatesResponseSchema(BaseModel):
+    """All document templates grouped by category."""
+    bid_submission_forms: Optional[List[DocumentTemplateSchema]] = Field(default_factory=list)
+    financial_formats: Optional[List[DocumentTemplateSchema]] = Field(default_factory=list)
+    technical_documents: Optional[List[DocumentTemplateSchema]] = Field(default_factory=list)
+    compliance_formats: Optional[List[DocumentTemplateSchema]] = Field(default_factory=list)
+
+
+# ============================================================================
+# MAIN RESPONSE SCHEMAS
+# ============================================================================
+
+class TenderAnalysisResponse(BaseModel):
+    """Complete tender analysis response matching frontend mock structure."""
+    id: str
+    tender_id: str
+    status: str
+    progress: Optional[int] = Field(None, ge=0, le=100, description="Analysis progress percentage (0-100)")
+    analyzed_at: Optional[datetime] = None
+
+    one_pager: Optional[OnePagerSchema] = None
+    scope_of_work: Optional[ScopeOfWorkSchema] = None
+    rfp_sections: Optional[RFPSectionsResponseSchema] = None
+    data_sheet: Optional[DataSheetSchema] = None
+    templates: Optional[TemplatesResponseSchema] = None
+
+    class Config:
+        from_attributes = True
+
+
+# ============================================================================
+# LEGACY SCHEMAS (KEPT FOR BACKWARD COMPATIBILITY)
+# ============================================================================
 
 class SSEEvent(BaseModel):
     """Defines the structure of a Server-Sent Event."""

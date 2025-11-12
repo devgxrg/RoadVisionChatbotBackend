@@ -648,7 +648,10 @@ Generate JSON only, no explanations:"""
 @retry_with_backoff(max_attempts=MAX_RETRIES, base_delay=RETRY_DELAY)
 def _generate_scope_of_work_details(context: str, scraped_tender, tdr: str) -> Optional[dict]:
     """
-    Generate scope of work details using LLM.
+    Generate comprehensive scope of work details using LLM.
+
+    Generates detailed work packages, components, technical specifications, deliverables,
+    and exclusions. Uses the comprehensive ScopeOfWorkSchema that matches frontend expectations.
 
     The @retry_with_backoff decorator handles transient API failures.
 
@@ -667,22 +670,65 @@ def _generate_scope_of_work_details(context: str, scraped_tender, tdr: str) -> O
 
 Respond ONLY with valid JSON. Use this exact structure:
 {{
-    "project_overview": {{
-        "name": "Project name/title",
+    "project_details": {{
+        "project_name": "Project name/title",
         "location": "Project location/address",
         "total_length": "length in km if applicable",
+        "total_area": "total area in square meters or relevant units",
         "duration": "project duration/timeline",
-        "value": "total project value with currency"
+        "contract_value": "total project value with currency"
     }},
-    "major_work_components": [
-        "Component 1: description",
-        "Component 2: description"
+    "work_packages": [
+        {{
+            "id": "wp-001",
+            "name": "Work package name",
+            "description": "Brief description of the work package",
+            "components": [
+                {{
+                    "item": "Component item name",
+                    "description": "Description of the work/component",
+                    "quantity": 1000,
+                    "unit": "unit of measurement (Sq.m, Cu.m, etc.)",
+                    "specifications": "Technical specifications or standards to follow"
+                }}
+            ],
+            "estimated_duration": "Duration for this work package",
+            "dependencies": ["wp-001", "wp-002"]
+        }}
     ],
-    "technical_standards_and_specifications": [
-        "Standard/Spec 1",
-        "Standard/Spec 2"
+    "technical_specifications": {{
+        "standards": ["Standard 1 (e.g., IRC guidelines)", "Standard 2"],
+        "quality_requirements": ["Quality requirement 1", "Quality requirement 2"],
+        "materials_specification": [
+            {{
+                "material": "Material name",
+                "specification": "Detailed specification (e.g., OPC Grade 53)",
+                "source": "Source or approval requirement",
+                "testing_standard": "Standard for testing (e.g., IS 4031)"
+            }}
+        ],
+        "testing_requirements": ["Testing requirement 1", "Testing requirement 2"]
+    }},
+    "deliverables": [
+        {{
+            "item": "Deliverable name",
+            "description": "Description of the deliverable",
+            "timeline": "When it should be delivered"
+        }}
+    ],
+    "exclusions": [
+        "What is NOT included in the scope",
+        "What the client is responsible for"
     ]
 }}
+
+IMPORTANT NOTES:
+- Extract ALL work packages with their components and dependencies
+- Include detailed technical specifications with standards and materials
+- List ALL project deliverables with timelines
+- Clearly identify scope exclusions
+- Provide realistic quantities and units for components
+- Use actual values from the tender document
 
 CONTEXT:
 {context}
@@ -707,7 +753,7 @@ Generate JSON only, no explanations:"""
         logger.error(f"[{tdr}] Failed to parse JSON in scope of work: {e}")
         return None
     except Exception as e:
-        logger.error(f"[{tdr}] Error generating scope of work: {e}")
+        logger.error(f"[{tdr}] Error generating scope of work: {e}", exc_info=True)
         return None
 
 
