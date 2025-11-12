@@ -5,17 +5,14 @@ import os
 import gc
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Generator
+from typing import List, Optional
 from uuid import uuid4
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import wraps
 import time
 
 import requests
 from sqlalchemy.orm import Session, joinedload
-from bs4 import BeautifulSoup
 
-from app.modules.askai.services.document_service import PDFProcessor 
 from app.modules.scraper.db.schema import ScrapedTender, ScrapedTenderFile
 from app.modules.tenderiq.db.schema import Tender
 from app.modules.analyze.db.schema import TenderAnalysis, AnalysisStatusEnum
@@ -24,12 +21,7 @@ from app.modules.analyze.models.pydantic_models import (
     ScopeOfWorkSchema,
     DataSheetSchema,
 )
-from app.core.services import llm_model, vector_store, embedding_model, pdf_processor
-from app.modules.askai.services.archive_utils import (
-    extract_archive,
-    detect_archive_type,
-    is_archive,
-)
+from app.core.services import llm_model, vector_store, pdf_processor
 
 logger = logging.getLogger(__name__)
 
@@ -38,10 +30,6 @@ logger = logging.getLogger(__name__)
 # These values are extracted from magic numbers throughout the code for easy tuning
 # ============================================================================
 
-# Chunking parameters for text splitting
-CHUNK_SIZE = 1000  # Characters per chunk
-CHUNK_OVERLAP = 100  # Characters to overlap between chunks
-
 # Context parameters
 MAX_CONTEXT_CHARS = 50000  # Max characters to send to LLM in context
 
@@ -49,23 +37,6 @@ MAX_CONTEXT_CHARS = 50000  # Max characters to send to LLM in context
 REQUEST_TIMEOUT = 30  # Seconds to wait for HTTP requests
 MAX_RETRIES = 3  # Number of times to retry failed operations
 RETRY_DELAY = 1.0  # Base delay in seconds between retries (exponential backoff)
-
-# Embedding parameters
-BATCH_SIZE = 32  # Number of chunks to embed at once (SentenceTransformer optimization)
-
-# File filtering
-MIN_TEXT_LENGTH = 500  # Minimum characters to extract before considering file valid
-
-# LLM Parallelization
-MAX_WORKERS = 3  # Number of concurrent LLM calls (executive summary, scope, datasheet)
-
-# Database batch operations
-DB_COMMIT_BATCH_SIZE = 5  # Commit progress updates every N steps
-
-# Archive handling
-MAX_ARCHIVE_RECURSION_DEPTH = 3  # Max nested archive extraction depth
-MAX_FILES_PER_ARCHIVE = 100  # Max files in archive (prevents extraction bombs)
-MAX_EXTRACTED_SIZE_MB = 500  # Max total uncompressed archive size
 
 
 # ============================================================================
@@ -280,79 +251,179 @@ def analyze_tender(db: Session, tdr: str):
         logger.info(f"[{tdr}] Successfully downloaded {len(downloaded_files)} files")
 
         # ====================================================================
-        # STEP 3: EXTRACT TEXT FROM DOCUMENTS
+        # STEP 3: PROCESS PDFS & EXTRACT TEXT WITH CHUNKING
         # ====================================================================
-        logger.info(f"[{tdr}] Extracting text from downloaded files")
+        # Key difference from old approach: Use pdf_processor.process_pdf() which
+        # returns pre-chunked and formatted chunks with metadata already cleaned.
+        # This is the same approach used in process_tender.py (which works).
+        #
+        # OLD APPROACH (broken):
+        #   1. Extract raw text with _extract_text_from_files()
+        #   2. Manually chunk text with _chunk_text()
+        #   3. Manually encode embeddings with _batch_encode_chunks()
+        #   4. Store with _store_embeddings_in_vector_db()
+        # → This approach crashed at progress 40 (during embedding generation)
+        #
+        # NEW APPROACH (working):
+        #   1. Use pdf_processor.process_pdf() for each PDF
+        #   2. Collect all chunks (already properly formatted with metadata)
+        #   3. Pass directly to vector_store.add_tender_chunks()
+        #   4. vector_store handles vectorization internally
+        # → This matches the proven pattern in process_tender.py
+        # ====================================================================
+        logger.info(f"[{tdr}] Processing documents and extracting text with chunking")
 
-        all_text = _extract_text_from_files(downloaded_files, tdr)
+        # Collect all chunks from all processed files
+        all_tender_chunks = []
+        total_chunks_created = 0
 
-        if not all_text or len(all_text) < MIN_TEXT_LENGTH:
-            logger.error(f"[{tdr}] Failed to extract meaningful text from files")
-            analysis.error_message = "Could not extract sufficient text from tender documents"
+        # Process each downloaded file
+        for file_path in downloaded_files:
+            try:
+                file_suffix = file_path.suffix.lower()
+
+                # Only process PDF files through pdf_processor
+                # (Other formats would need their own processors)
+                if file_suffix == ".pdf":
+                    logger.info(f"[{tdr}] Processing PDF with pdf_processor: {file_path.name}")
+
+                    # pdf_processor.process_pdf() handles:
+                    # - Text extraction (with LlamaParse OCR, PyMuPDF, Tesseract fallbacks)
+                    # - Chunking (with proper overlap)
+                    # - Metadata cleaning and standardization
+                    # This is the working approach from process_tender.py
+                    import uuid as uuid_module
+                    doc_id = str(uuid_module.uuid4())
+                    job_id = f"analyze_tender_{tdr}_{uuid_module.uuid4()}"
+
+                    chunks, stats = pdf_processor.process_pdf(
+                        job_id=job_id,
+                        pdf_path=str(file_path),
+                        doc_id=doc_id,
+                        filename=file_path.name
+                    )
+
+                    if chunks:
+                        all_tender_chunks.extend(chunks)
+                        total_chunks_created += len(chunks)
+                        logger.info(f"[{tdr}] Processed {file_path.name}: {len(chunks)} chunks created")
+                    else:
+                        logger.warning(f"[{tdr}] No chunks extracted from {file_path.name}")
+
+                else:
+                    logger.warning(f"[{tdr}] Skipping non-PDF file: {file_path.name} (format: {file_suffix})")
+
+            except Exception as e:
+                logger.error(f"[{tdr}] Failed to process {file_path.name}: {e}", exc_info=True)
+                # Continue with other files - don't fail entire analysis
+
+        # Validate that we extracted meaningful chunks
+        if not all_tender_chunks:
+            logger.error(f"[{tdr}] Failed to extract any chunks from downloaded files")
+            analysis.error_message = "Could not extract meaningful content from tender documents"
             analysis.status = AnalysisStatusEnum.failed
             db.commit()
             return
 
-        logger.info(f"[{tdr}] Extracted {len(all_text):,} characters from documents")
+        logger.info(f"[{tdr}] Successfully extracted {total_chunks_created} chunks from documents")
         analysis.progress = 40
-        analysis.status_message = "Text extracted, creating chunks"
+        analysis.status_message = f"Extracted {total_chunks_created} chunks, storing in vector database"
         db.commit()
 
         # ====================================================================
-        # STEP 4: CREATE CHUNKS & STORE IN VECTOR DATABASE
-        # The vector database will handle embedding generation internally
+        # STEP 4: STORE CHUNKS IN VECTOR DATABASE
         # ====================================================================
-        logger.info(f"[{tdr}] Creating text chunks and embeddings")
-
-        chunks = _chunk_text(all_text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP)
-        logger.info(f"[{tdr}] Created {len(chunks)} chunks from extracted text")
-
-        # Batch embed for efficiency: process multiple chunks at once
-        # SentenceTransformer is optimized for batch processing
-        embeddings = _batch_encode_chunks(chunks, batch_size=BATCH_SIZE)
-        logger.info(f"[{tdr}] Created {len(embeddings)} embeddings")
-
-        analysis.progress = 50
-        analysis.status_message = "Embeddings created, storing in vector database"
-        db.commit()
-
-        # Store embeddings in vector database if available
-        # This enables semantic search for RAG functionality (future feature)
+        # The vector_store.add_tender_chunks() method handles:
+        # - Vectorization using embedding_model.encode()
+        # - Batch insertion for efficiency
+        # - Metadata preservation
+        # This is much more efficient than manual embedding and storing individually.
+        # ====================================================================
         if vector_store:
-            logger.info(f"[{tdr}] Storing {len(embeddings)} embeddings in vector database")
-            _store_embeddings_in_vector_db(chunks, embeddings, tdr, scraped_tender.tender_name)
-            analysis.progress = 60
-            db.commit()
+            try:
+                logger.info(f"[{tdr}] Creating Weaviate collection and storing chunks")
+
+                # Create a new collection for this tender
+                # Deletes any existing collection to ensure freshness
+                tender_collection = vector_store.create_tender_collection(tdr)
+                logger.info(f"[{tdr}] Created Weaviate collection: {tender_collection.name}")
+
+                # Add all chunks with vectorization handled internally
+                # This uses batch processing for efficiency (batch_size=32)
+                chunks_added = vector_store.add_tender_chunks(tender_collection, all_tender_chunks)
+                logger.info(f"[{tdr}] Successfully added {chunks_added} chunks to vector database")
+
+                analysis.progress = 60
+                analysis.status_message = f"Stored {chunks_added} chunks in vector database"
+                db.commit()
+
+            except Exception as e:
+                logger.error(f"[{tdr}] Failed to store chunks in vector database: {e}", exc_info=True)
+                analysis.error_message = f"Vector database storage failed: {str(e)[:500]}"
+                analysis.status = AnalysisStatusEnum.failed
+                db.commit()
+                return
         else:
-            logger.warning(f"[{tdr}] Vector store not available, skipping storage")
+            logger.warning(f"[{tdr}] Vector store not initialized, skipping vector database storage")
 
         # ====================================================================
-        # STEP 5: GENERATE LLM-BASED ANALYSIS (IN PARALLEL)
-        # This is the key optimization: 3 LLM calls in parallel instead of sequential
-        # Sequential: 90-180 seconds. Parallel: 30-60 seconds.
+        # STEP 5: GENERATE LLM-BASED ANALYSIS (SEQUENTIAL)
+        # Generate analyses one after another for stability and predictability
         # ====================================================================
         logger.info(f"[{tdr}] Building context for LLM analysis")
 
+        # Reconstruct text from chunks for LLM context
+        # Each chunk is a dict with 'content' key
+        all_text = "\n\n".join([chunk.get('content', '') for chunk in all_tender_chunks if chunk.get('content')])
+        logger.info(f"[{tdr}] Reconstructed {len(all_text):,} characters from {len(all_tender_chunks)} chunks for LLM context")
+
         tender_context = _build_tender_context(tender, scraped_tender, all_text)
 
-        logger.info(f"[{tdr}] Starting parallel LLM analysis (3 concurrent tasks)")
+        logger.info(f"[{tdr}] Starting sequential LLM analysis")
 
-        # Use ThreadPoolExecutor to run 3 LLM calls in parallel
-        # Each call generates a different type of analysis (summary, scope, datasheet)
-        analysis_results = _generate_analyses_parallel(tender_context, scraped_tender, tdr)
+        # ====================================================================
+        # Generate analyses sequentially (one after another)
+        # Each call processes: 1) Executive summary, 2) Scope of work, 3) Data sheet
+        # ====================================================================
 
-        # Store results in analysis record
-        if analysis_results.get("one_pager"):
-            analysis.one_pager_json = analysis_results["one_pager"]
+        # Step 1: Generate executive summary (OnePager)
+        logger.info(f"[{tdr}] Generating executive summary (OnePager)")
+        analysis.progress = 70
+        analysis.status_message = "Generating executive summary"
+        db.commit()
+
+        one_pager = _generate_executive_summary(tender_context, tdr)
+        if one_pager:
+            analysis.one_pager_json = one_pager
             logger.info(f"[{tdr}] Executive summary generated successfully")
+        else:
+            logger.warning(f"[{tdr}] Failed to generate executive summary")
 
-        if analysis_results.get("scope_of_work"):
-            analysis.scope_of_work_json = analysis_results["scope_of_work"]
+        # Step 2: Generate scope of work
+        logger.info(f"[{tdr}] Generating scope of work details")
+        analysis.progress = 80
+        analysis.status_message = "Generating scope of work"
+        db.commit()
+
+        scope_of_work = _generate_scope_of_work_details(tender_context, scraped_tender, tdr)
+        if scope_of_work:
+            analysis.scope_of_work_json = scope_of_work
             logger.info(f"[{tdr}] Scope of work generated successfully")
+        else:
+            logger.warning(f"[{tdr}] Failed to generate scope of work")
 
-        if analysis_results.get("data_sheet"):
-            analysis.data_sheet_json = analysis_results["data_sheet"]
+        # Step 3: Generate comprehensive datasheet
+        logger.info(f"[{tdr}] Generating comprehensive datasheet")
+        analysis.progress = 90
+        analysis.status_message = "Generating datasheet"
+        db.commit()
+
+        data_sheet = _generate_comprehensive_datasheet(tender_context, scraped_tender, tdr)
+        if data_sheet:
+            analysis.data_sheet_json = data_sheet
             logger.info(f"[{tdr}] Data sheet generated successfully")
+        else:
+            logger.warning(f"[{tdr}] Failed to generate datasheet")
 
         # ====================================================================
         # STEP 6: MARK ANALYSIS AS COMPLETE
@@ -456,355 +527,14 @@ def _download_single_file_with_retry(file: ScrapedTenderFile, temp_dir: Path) ->
     return file_path
 
 
-def _extract_text_from_files(downloaded_files: List[Path], tdr: str) -> str:
-    """
-    Extract text from downloaded files (PDF, HTML, Archives, etc.).
-
-    This function:
-    - Uses PDFProcessor for PDFs (LlamaParse OCR with fallbacks)
-    - Uses BeautifulSoup for HTML files
-    - Extracts and recursively processes archive files (ZIP, RAR, TAR, 7Z, etc.)
-    - Gracefully handles extraction failures for individual files
-    - Accumulates text from all successfully processed files
-    - Logs extraction results for debugging
-    - Only includes files that extracted meaningful content (MIN_TEXT_LENGTH)
-
-    Archive Processing:
-    - Automatically detects archive format
-    - Extracts to temporary directory
-    - Recursively processes contents (with depth limit)
-    - Preserves archive file paths in output
-
-    PDF Processing Chain (from PDFProcessor):
-    1. LlamaParse OCR (external service, best for scanned PDFs)
-    2. PyMuPDF (local fallback, good for standard PDFs)
-    3. Tesseract OCR (local OCR, final fallback for images)
-
-    Supported formats:
-    - PDF: Uses PDFProcessor (which uses LlamaParse + fallbacks)
-    - HTML: Uses BeautifulSoup to extract visible text
-    - Archives: ZIP, RAR, TAR, TAR.GZ, TAR.BZ2, 7Z (extracted and processed)
-
-    Args:
-        downloaded_files: List of file paths to extract text from
-        tdr: Tender ID for logging
-
-    Returns:
-        Concatenated text from all files
-    """
-    all_text = ""
-    files_processed = 0
-    files_skipped = 0
-
-    # Use generator to recursively process files (including extracted archives)
-    for file_path in _get_all_processable_files(downloaded_files, tdr, depth=0):
-        try:
-            extracted_text = None
-            file_suffix = file_path.suffix.lower()
-
-            if file_suffix == ".pdf":
-                # Extract PDF text using PDFProcessor with memory management
-                # This uses LlamaParse with fallbacks (PyMuPDF, Tesseract)
-                logger.info(f"[{tdr}] Extracting PDF using PDFProcessor: {file_path.name}")
-
-                # Check file size to prevent memory issues
-                file_size = file_path.stat().st_size
-                max_file_size = 50 * 1024 * 1024  # 50MB limit
-                
-                if file_size > max_file_size:
-                    logger.warning(f"[{tdr}] PDF file {file_path.name} is too large ({file_size/1024/1024:.1f}MB), skipping")
-                    files_skipped += 1
-                    continue
-
-                try:
-                    import psutil
-                    import gc
-                    
-                    # Check available memory before processing
-                    available_memory = psutil.virtual_memory().available
-                    memory_threshold = 500 * 1024 * 1024  # 500MB minimum required
-                    
-                    if available_memory < memory_threshold:
-                        logger.warning(f"[{tdr}] Low memory ({available_memory/1024/1024:.1f}MB), forcing garbage collection")
-                        gc.collect()
-                        available_memory = psutil.virtual_memory().available
-                        
-                        if available_memory < memory_threshold:
-                            logger.error(f"[{tdr}] Insufficient memory to process {file_path.name}, skipping")
-                            files_skipped += 1
-                            continue
-                    
-                    # Use the full process_pdf method instead of direct extract methods
-                    # This provides better error handling and memory management
-                    logger.info(f"[{tdr}] Starting PDF processing with memory management...")
-                    chunks, stats = pdf_processor.process_pdf(
-                        job_id=f"analyze_tender_{tdr}",
-                        pdf_path=str(file_path),
-                        doc_id=tdr,
-                        filename=file_path.name
-                    )
-                    
-                    if chunks:
-                        # Extract text content from chunks for backward compatibility
-                        extracted_text = " ".join([chunk.get('content', '') for chunk in chunks])
-                        logger.info(f"[{tdr}] Successfully extracted {len(extracted_text)} characters from PDF {file_path.name}")
-                    else:
-                        logger.warning(f"[{tdr}] No chunks extracted from PDF {file_path.name}")
-                        extracted_text = None
-                        
-                except ImportError:
-                    logger.warning(f"[{tdr}] psutil not available, proceeding without memory checks")
-                    # Fallback to original method but with timeout protection
-                    try:
-                        chunks, stats = pdf_processor.process_pdf(
-                            job_id=f"analyze_tender_{tdr}",
-                            pdf_path=str(file_path),
-                            doc_id=tdr,
-                            filename=file_path.name
-                        )
-                        
-                        if chunks:
-                            extracted_text = " ".join([chunk.get('content', '') for chunk in chunks])
-                            logger.info(f"[{tdr}] Successfully extracted {len(extracted_text)} characters from PDF {file_path.name}")
-                        else:
-                            logger.warning(f"[{tdr}] No chunks extracted from PDF {file_path.name}")
-                            extracted_text = None
-                            
-                    except Exception as e:
-                        logger.error(f"[{tdr}] PDF processing failed for {file_path.name}: {e}")
-                        extracted_text = None
-                
-                except Exception as e:
-                    logger.error(f"[{tdr}] PDF processing failed for {file_path.name}: {e}")
-                    # Try fallback methods with memory protection
-                    try:
-                        logger.info(f"[{tdr}] Attempting PyMuPDF fallback for {file_path.name}")
-                        page_texts = pdf_processor.extract_with_pymupdf(str(file_path))
-                        if page_texts:
-                            extracted_text = " ".join(page_texts.values())
-                        else:
-                            logger.warning(f"[{tdr}] All PDF extraction methods failed for {file_path.name}")
-                            extracted_text = None
-                    except Exception as fallback_error:
-                        logger.error(f"[{tdr}] Fallback PDF extraction failed for {file_path.name}: {fallback_error}")
-                        extracted_text = None
-
-            elif file_suffix in [".html", ".htm"]:
-                # Extract visible text from HTML using BeautifulSoup
-                logger.info(f"[{tdr}] Extracting HTML: {file_path.name}")
-                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                    soup = BeautifulSoup(f.read(), "html.parser")
-                    # get_text() removes HTML tags and extracts visible content
-                    extracted_text = soup.get_text()
-
-            if extracted_text and len(extracted_text) >= MIN_TEXT_LENGTH:
-                # Only include file if we extracted meaningful content
-                all_text += f"\n--- {file_path.name} ---\n{extracted_text}\n"
-                files_processed += 1
-                logger.info(f"[{tdr}] Extracted {len(extracted_text):,} chars from {file_path.name}")
-            else:
-                # File either couldn't be processed or had no meaningful content
-                files_skipped += 1
-                logger.warning(
-                    f"[{tdr}] Skipped {file_path.name}: "
-                    f"{'insufficient content' if not extracted_text else 'extraction failed'}"
-                )
-
-        except Exception as e:
-            # Log extraction failure but continue with next file
-            logger.error(f"[{tdr}] Failed to extract text from {file_path.name}: {e}")
-            files_skipped += 1
-
-    logger.info(f"[{tdr}] Text extraction complete: {files_processed} processed, {files_skipped} skipped")
-    return all_text
 
 
-def _get_all_processable_files(
-    file_paths: List[Path], tdr: str, depth: int = 0
-) -> Generator[Path, None, None]:
-    """
-    Recursively process files, extracting archives and yielding all processable files.
-
-    This generator function handles archives transparently. When an archive is
-    encountered, it's extracted and the contained files are recursively processed.
-
-    Archives are extracted to temporary directories that are cleaned up as the
-    generator yields files. This prevents temporary files from accumulating.
-
-    Args:
-        file_paths: List of file paths to process (may contain archives)
-        tdr: Tender ID for logging
-        depth: Current recursion depth (for safety limits)
-
-    Yields:
-        Path objects for non-archive files that can be processed
-    """
-    # Safety check: prevent infinite recursion with nested archives
-    if depth > MAX_ARCHIVE_RECURSION_DEPTH:
-        logger.warning(f"[{tdr}] Archive recursion depth exceeded ({MAX_ARCHIVE_RECURSION_DEPTH})")
-        return
-
-    for file_path in file_paths:
-        # Check if file is an archive
-        if is_archive(file_path):
-            archive_type = detect_archive_type(str(file_path))
-            logger.info(f"[{tdr}] Detected archive format: {archive_type} for {file_path.name}")
-
-            try:
-                # Extract archive to temporary directory
-                temp_extract_dir = Path(f"/tmp/archive_extract_{file_path.stem}_{uuid4()}")
-                logger.info(f"[{tdr}] Extracting archive to: {temp_extract_dir}")
-
-                extracted_files = extract_archive(
-                    str(file_path),
-                    str(temp_extract_dir),
-                    max_files=MAX_FILES_PER_ARCHIVE,
-                    max_size_mb=MAX_EXTRACTED_SIZE_MB,
-                )
-
-                if extracted_files:
-                    logger.info(f"[{tdr}] Extracted {len(extracted_files)} files from {file_path.name}")
-
-                    # Recursively process extracted files (may contain nested archives)
-                    yield from _get_all_processable_files(extracted_files, tdr, depth + 1)
-
-                    # Cleanup extracted files and directory
-                    try:
-                        shutil.rmtree(temp_extract_dir, ignore_errors=True)
-                    except Exception as e:
-                        logger.warning(f"[{tdr}] Failed to cleanup temp archive directory: {e}")
-                else:
-                    logger.warning(f"[{tdr}] Failed to extract archive: {file_path.name}")
-
-            except Exception as e:
-                logger.error(f"[{tdr}] Error processing archive {file_path.name}: {e}")
-                # Continue with next file - don't fail entire analysis
-        else:
-            # Not an archive - yield for processing
-            yield file_path
 
 
-def _chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> List[str]:
-    """
-    Split text into overlapping chunks for embedding.
-
-    Chunking helps with:
-    1. Managing token limits (LLMs have max input token limits)
-    2. Creating semantic units for vector database storage
-    3. Enabling fine-grained retrieval in RAG applications
-
-    The overlap parameter ensures context is preserved between chunks,
-    so important information at chunk boundaries isn't lost.
-
-    Example with chunk_size=1000, overlap=100:
-    - Chunk 1: chars 0-1000
-    - Chunk 2: chars 900-1900 (overlaps 100 chars with chunk 1)
-    - Chunk 3: chars 1800-2800 (overlaps 100 chars with chunk 2)
-
-    Args:
-        text: Full text to chunk
-        chunk_size: Size of each chunk in characters
-        overlap: Number of overlapping characters between consecutive chunks
-
-    Returns:
-        List of text chunks
-    """
-    chunks = []
-    start = 0
-
-    while start < len(text):
-        # Don't exceed text length
-        end = min(start + chunk_size, len(text))
-        chunks.append(text[start:end])
-
-        # Move start position forward, accounting for overlap
-        # If overlap=100, we go back 100 chars before resuming
-        start = end - overlap
-
-    logger.debug(f"Created {len(chunks)} chunks from {len(text):,} character text")
-    return chunks
 
 
-def _batch_encode_chunks(chunks: List[str], batch_size: int = BATCH_SIZE) -> List:
-    """
-    Encode text chunks to embeddings using batch processing for efficiency.
-
-    Batch processing is MUCH faster than sequential encoding:
-    - Sequential: ~5ms per chunk → 500ms for 100 chunks
-    - Batch (32): ~100ms for 32 chunks → 312ms for 100 chunks
-    → 1.6x speedup, and scales even better for larger batches
-
-    This function groups chunks into batches of batch_size, encodes each batch,
-    and flattens the results back into a single list.
-
-    Args:
-        chunks: List of text strings to encode
-        batch_size: Number of chunks to encode at once (SentenceTransformer is optimized for this)
-
-    Returns:
-        List of embedding vectors (same length as chunks)
-    """
-    all_embeddings = []
-
-    # Process chunks in batches
-    for i in range(0, len(chunks), batch_size):
-        # Get a batch of chunks
-        batch = chunks[i : i + batch_size]
-
-        # Encode entire batch at once (much faster than one-by-one)
-        # Returns list of embeddings for this batch
-        batch_embeddings = embedding_model.encode(batch)
-
-        all_embeddings.extend(batch_embeddings)
-
-    logger.debug(f"Encoded {len(all_embeddings)} chunks in batches of {batch_size}")
-    return all_embeddings
 
 
-def _store_embeddings_in_vector_db(
-    chunks: List[str], embeddings: List, tdr: str, tender_name: str
-) -> None:
-    """
-    Store text chunks and their embeddings in the vector database.
-
-    Vector database storage enables:
-    - Semantic search: Find relevant document sections by meaning, not keywords
-    - RAG (Retrieval Augmented Generation): Retrieve relevant context for LLM queries
-    - Future feature: User can ask questions about tender, system retrieves relevant chunks
-
-    This function attempts to store all embeddings, but doesn't fail the entire analysis
-    if vector storage fails (it's optional for the basic analysis to work).
-
-    Args:
-        chunks: Text chunks to store
-        embeddings: Corresponding embedding vectors
-        tdr: Tender ID
-        tender_name: Tender name for metadata
-    """
-    stored_count = 0
-    failed_count = 0
-
-    for idx, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
-        try:
-            vector_store.add_text(
-                text=chunk,
-                embedding=embedding,
-                metadata={
-                    "tender_id": tdr,
-                    "tender_name": tender_name,
-                    "chunk_index": idx,
-                    "type": "tender_document",
-                },
-            )
-            stored_count += 1
-        except Exception as e:
-            # Log failure but continue storing other embeddings
-            logger.warning(f"[{tdr}] Failed to store embedding chunk {idx}: {e}")
-            failed_count += 1
-
-    logger.info(
-        f"[{tdr}] Vector storage complete: {stored_count} stored, {failed_count} failed"
-    )
 
 
 # ============================================================================
@@ -854,56 +584,11 @@ EXTRACTED DOCUMENT CONTENT:
     return context
 
 
-def _generate_analyses_parallel(context: str, scraped_tender, tdr: str) -> dict:
-    """
-    Generate 3 types of analysis in parallel for speed.
-
-    This function uses ThreadPoolExecutor to run 3 LLM calls concurrently:
-    - Executive summary (OnePager)
-    - Scope of work details
-    - Comprehensive datasheet
-
-    Parallel execution greatly reduces total time:
-    - Sequential: 3 calls × 30-60s = 90-180 seconds
-    - Parallel: max(30-60s) = 30-60 seconds
-    → 3x speedup!
-
-    Each task is run in a separate thread, and we wait for all to complete.
-    If one fails, others still complete (non-blocking failures).
-
-    Args:
-        context: Tender context string (built once, reused for all 3 calls)
-        scraped_tender: Tender metadata for additional context
-        tdr: Tender ID for logging
-
-    Returns:
-        Dictionary with keys: "one_pager", "scope_of_work", "data_sheet"
-        Values are either the generated dict or None if generation failed
-    """
-    results = {}
-
-    # Use ThreadPoolExecutor to run 3 LLM calls concurrently
-    # MAX_WORKERS=3 means up to 3 threads running at once
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        # Submit all 3 tasks immediately (they run concurrently)
-        future_one_pager = executor.submit(_generate_executive_summary, context, tdr)
-        future_scope = executor.submit(_generate_scope_of_work_details, context, scraped_tender, tdr)
-        future_datasheet = executor.submit(_generate_comprehensive_datasheet, context, scraped_tender, tdr)
-
-        # Wait for results as they complete (non-blocking)
-        results["one_pager"] = future_one_pager.result()
-        results["scope_of_work"] = future_scope.result()
-        results["data_sheet"] = future_datasheet.result()
-
-    return results
-
-
 @retry_with_backoff(max_attempts=MAX_RETRIES, base_delay=RETRY_DELAY)
 def _generate_executive_summary(context: str, tdr: str) -> Optional[dict]:
     """
     Generate an executive summary (OnePager) of the tender using LLM.
 
-    This task is designed to be run in parallel with other LLM calls.
     The @retry_with_backoff decorator handles transient API failures.
 
     Args:
@@ -965,7 +650,6 @@ def _generate_scope_of_work_details(context: str, scraped_tender, tdr: str) -> O
     """
     Generate scope of work details using LLM.
 
-    This task is designed to be run in parallel with other LLM calls.
     The @retry_with_backoff decorator handles transient API failures.
 
     Args:
@@ -1032,7 +716,6 @@ def _generate_comprehensive_datasheet(context: str, scraped_tender, tdr: str) ->
     """
     Generate a comprehensive datasheet using LLM.
 
-    This task is designed to be run in parallel with other LLM calls.
     The @retry_with_backoff decorator handles transient API failures.
 
     Args:
