@@ -62,7 +62,8 @@ class VectorStoreManager:
                 data_objects.append(properties)
             
             content_for_embedding = [obj["content"] for obj in data_objects]
-            vectors = self.embedding_model.encode(content_for_embedding, show_progress_bar=True, batch_size=32)
+            # Disable progress bar to prevent silent crashes in non-interactive environments
+            vectors = self.embedding_model.encode(content_for_embedding, show_progress_bar=False, batch_size=32)
 
             with collection.batch.dynamic() as batch:
                 for i, data_obj in enumerate(data_objects):
@@ -70,7 +71,7 @@ class VectorStoreManager:
                         properties=data_obj,
                         vector=vectors[i]
                     )
-            
+
             print(f"✅ Added {len(data_objects)} chunks to Weaviate collection {collection.name}")
             return len(data_objects)
 
@@ -78,7 +79,7 @@ class VectorStoreManager:
             print(f"❌ Error adding chunks to Weaviate: {e}")
             traceback.print_exc()
             return 0
-    
+
     def query(self, collection: Collection, query: str, n_results: int = settings.RAG_TOP_K) -> List[Tuple]:
         """Query Weaviate collection"""
         if not self.client:
@@ -191,7 +192,8 @@ class VectorStoreManager:
                 data_objects.append(properties)
 
             content_for_embedding = [obj["content"] for obj in data_objects]
-            vectors = self.embedding_model.encode(content_for_embedding, show_progress_bar=True, batch_size=32)
+            # Disable progress bar to prevent silent crashes in non-interactive environments
+            vectors = self.embedding_model.encode(content_for_embedding, show_progress_bar=False, batch_size=32)
 
             with collection.batch.dynamic() as batch:
                 for i, data_obj in enumerate(data_objects):
@@ -315,8 +317,9 @@ class VectorStoreManager:
                 safe_id = f"doc_{doc_id}_chunk_{i}_{uuid.uuid4().hex[:6]}"
                 safe_id = re.sub(r'[^\w\-]', '_', safe_id)
                 ids.append(safe_id)
-            
-            embeddings = self.embedding_model.encode(documents, show_progress_bar=True, batch_size=32)
+
+            # Disable progress bar to prevent silent crashes in non-interactive environments
+            embeddings = self.embedding_model.encode(documents, show_progress_bar=False, batch_size=32)
             
             batch_size = 100
             for i in range(0, len(documents), batch_size):
