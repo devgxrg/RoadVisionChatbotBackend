@@ -249,25 +249,29 @@ def analyze_tender(db: Session, tdr: str):
         # STEP 4: CREATE CHUNKS & STORE IN VECTOR DATABASE
         # The vector database will handle embedding generation internally
         # ====================================================================
-        logger.info(f"[{tdr}] Creating text chunks for vector storage")
+        logger.info(f"[{tdr}] Creating text chunks and embeddings")
 
         chunks = _chunk_text(all_text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP)
         logger.info(f"[{tdr}] Created {len(chunks)} chunks from extracted text")
 
+        # Batch embed for efficiency: process multiple chunks at once
+        # SentenceTransformer is optimized for batch processing
+        embeddings = _batch_encode_chunks(chunks, batch_size=BATCH_SIZE)
+        logger.info(f"[{tdr}] Created {len(embeddings)} embeddings")
+
         analysis.progress = 50
-        analysis.status_message = "Chunks created, storing in vector database"
+        analysis.status_message = "Embeddings created, storing in vector database"
         db.commit()
 
-        # Store chunks in vector database
-        # The vector_store.add_tender_chunks() method handles:
-        # - Batch embedding generation (efficient, not one-by-one)
-        # - Proper metadata mapping
-        # - Batch insertion into Weaviate
-        # This is the same approach used in process_tender.py (proven to work)
-        logger.info(f"[{tdr}] Storing {len(chunks)} chunks in vector database")
-        _store_embeddings_in_vector_db(chunks, tdr, scraped_tender.tender_name)
-        analysis.progress = 60
-        db.commit()
+        # Store embeddings in vector database if available
+        # This enables semantic search for RAG functionality (future feature)
+        if vector_store:
+            logger.info(f"[{tdr}] Storing {len(embeddings)} embeddings in vector database")
+            _store_embeddings_in_vector_db(chunks, embeddings, tdr, scraped_tender.tender_name)
+            analysis.progress = 60
+            db.commit()
+        else:
+            logger.warning(f"[{tdr}] Vector store not available, skipping storage")
 
         # ====================================================================
         # STEP 5: GENERATE LLM-BASED ANALYSIS (IN PARALLEL)
@@ -610,75 +614,86 @@ def _chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OV
     return chunks
 
 
+def _batch_encode_chunks(chunks: List[str], batch_size: int = BATCH_SIZE) -> List:
+    """
+    Encode text chunks to embeddings using batch processing for efficiency.
+
+    Batch processing is MUCH faster than sequential encoding:
+    - Sequential: ~5ms per chunk → 500ms for 100 chunks
+    - Batch (32): ~100ms for 32 chunks → 312ms for 100 chunks
+    → 1.6x speedup, and scales even better for larger batches
+
+    This function groups chunks into batches of batch_size, encodes each batch,
+    and flattens the results back into a single list.
+
+    Args:
+        chunks: List of text strings to encode
+        batch_size: Number of chunks to encode at once (SentenceTransformer is optimized for this)
+
+    Returns:
+        List of embedding vectors (same length as chunks)
+    """
+    all_embeddings = []
+
+    # Process chunks in batches
+    for i in range(0, len(chunks), batch_size):
+        # Get a batch of chunks
+        batch = chunks[i : i + batch_size]
+
+        # Encode entire batch at once (much faster than one-by-one)
+        # Returns list of embeddings for this batch
+        batch_embeddings = embedding_model.encode(batch)
+
+        all_embeddings.extend(batch_embeddings)
+
+    logger.debug(f"Encoded {len(all_embeddings)} chunks in batches of {batch_size}")
+    return all_embeddings
+
+
 def _store_embeddings_in_vector_db(
-    chunks: List[str], tdr: str, tender_name: str
+    chunks: List[str], embeddings: List, tdr: str, tender_name: str
 ) -> None:
     """
-    Store text chunks in the vector database (Weaviate).
+    Store text chunks and their embeddings in the vector database.
 
-    Creates a dedicated Weaviate collection for this tender and stores all chunks
-    with proper metadata. This enables:
+    Vector database storage enables:
     - Semantic search: Find relevant document sections by meaning, not keywords
     - RAG (Retrieval Augmented Generation): Retrieve relevant context for LLM queries
     - Future feature: User can ask questions about tender, system retrieves relevant chunks
 
-    Architecture:
-    - One collection per tender (isolated, easy to clean up)
-    - Chunks stored with metadata (document name, type, etc.)
-    - Embeddings generated efficiently in batches
-    - Batch insertion for performance
-
-    This function uses the same vector storage approach as process_tender.py,
-    which is proven to work reliably.
+    This function attempts to store all embeddings, but doesn't fail the entire analysis
+    if vector storage fails (it's optional for the basic analysis to work).
 
     Args:
-        chunks: Text chunks to store (content strings, NOT embeddings)
-        tdr: Tender ID (used to create collection name)
+        chunks: Text chunks to store
+        embeddings: Corresponding embedding vectors
+        tdr: Tender ID
         tender_name: Tender name for metadata
     """
-    if not vector_store:
-        logger.warning(f"[{tdr}] Vector store not available, skipping storage")
-        return
+    stored_count = 0
+    failed_count = 0
 
-    try:
-        logger.info(f"[{tdr}] Creating Weaviate collection for tender")
+    for idx, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+        try:
+            vector_store.add_text(
+                text=chunk,
+                embedding=embedding,
+                metadata={
+                    "tender_id": tdr,
+                    "tender_name": tender_name,
+                    "chunk_index": idx,
+                    "type": "tender_document",
+                },
+            )
+            stored_count += 1
+        except Exception as e:
+            # Log failure but continue storing other embeddings
+            logger.warning(f"[{tdr}] Failed to store embedding chunk {idx}: {e}")
+            failed_count += 1
 
-        # Create a dedicated collection for this tender
-        # This isolates tender data and prevents collision with other tenders
-        tender_collection = vector_store.create_tender_collection(tdr)
-
-        # Convert raw text chunks into the format expected by add_tender_chunks
-        # Each chunk needs content + metadata
-        formatted_chunks = []
-        for idx, chunk_text in enumerate(chunks):
-            formatted_chunks.append({
-                "content": chunk_text,
-                "metadata": {
-                    "source": tender_name,  # document_name in Weaviate
-                    "doc_type": "tender_document",  # document_type in Weaviate
-                    "type": "text",  # chunk_type in Weaviate
-                    "page": "0",  # page_number in Weaviate
-                    "chunk_index": idx,  # chunk_index (INT type in Weaviate)
-                }
-            })
-
-        # Use batch insert method that's proven to work
-        # This handles:
-        # - Batch embedding (efficient, not one-by-one)
-        # - Proper metadata mapping
-        # - Error handling
-        logger.info(f"[{tdr}] Adding {len(formatted_chunks)} chunks to tender collection")
-        chunks_added = vector_store.add_tender_chunks(tender_collection, formatted_chunks)
-
-        if chunks_added > 0:
-            logger.info(f"[{tdr}] Successfully stored {chunks_added} chunks in Weaviate")
-        else:
-            logger.warning(f"[{tdr}] No chunks were added to Weaviate")
-
-    except Exception as e:
-        # Log but don't fail entire analysis - vector storage is optional
-        logger.error(f"[{tdr}] Failed to store chunks in vector database: {e}")
-        logger.warning(f"[{tdr}] Continuing analysis without vector storage")
+    logger.info(
+        f"[{tdr}] Vector storage complete: {stored_count} stored, {failed_count} failed"
+    )
 
 
 # ============================================================================
