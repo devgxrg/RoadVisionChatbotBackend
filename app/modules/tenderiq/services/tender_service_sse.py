@@ -33,8 +33,17 @@ def get_daily_tenders_limited(db: Session, start: int, end: int):
     return to_return
 
 def get_daily_tenders_sse(db: Session, start: Optional[int] = 0, end: Optional[int] = 1000, run_id: Optional[str] = None):
+    """
+    run_id here could be a UUID mapping to a ScrapeRun
+    OR it could be one of the following strings:
+        "latest"
+        "last_2_days"
+        "last_5_days"
+        "last_7_days"
+        "last_30_days"
+    """
     scrape_runs = tenderiq_repo.get_scrape_runs(db)
-    latest_scrape_run = scrape_runs[0]
+    latest_scrape_run = scrape_runs[0] if not run_id else tenderiq_repo.get_scrape_run_by_id(db, run_id)
     categories_of_current_day = tenderiq_repo.get_all_categories(db, latest_scrape_run)
 
     to_return = DailyTendersResponse(
@@ -54,6 +63,7 @@ def get_daily_tenders_sse(db: Session, start: Optional[int] = 0, end: Optional[i
     }
 
     for category in categories_of_current_day:
+        start = 0
         batch = 100
         while True:
             tenders = tenderiq_repo.get_tenders_from_category(db, category, start, batch)

@@ -61,10 +61,10 @@ def get_daily_tenders(db: Session = Depends(get_db_session)):
 def get_daily_tenders_sse(
     start: Optional[int] = 0,
     end: Optional[int] = 1000,
-    scrape_run_id: Optional[UUID] = None,
+    scrape_run_id: Optional[str] = None,
     db: Session = Depends(get_db_session)
 ):
-    return EventSourceResponse(tender_service_sse.get_daily_tenders_sse(db, start, end, str(scrape_run_id)))
+    return EventSourceResponse(tender_service_sse.get_daily_tenders_sse(db, start, end, scrape_run_id))
 
 @router.get(
     "/tenders/{tender_id}",

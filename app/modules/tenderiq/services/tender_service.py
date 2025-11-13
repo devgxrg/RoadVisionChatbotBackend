@@ -7,7 +7,8 @@ import re
 # Assume other necessary imports for ScrapedTender, Tender, etc. are here
 from app.modules.scraper.db.schema import ScrapedTender
 from app.modules.tenderiq.db.schema import Tender
-from app.modules.tenderiq.models.pydantic_models import DailyTendersResponse, FullTenderDetails
+from app.modules.tenderiq.models.pydantic_models import DailyTendersResponse, FullTenderDetails, Tender as TenderModel
+from app.modules.tenderiq.repositories import repository as tenderiq_repo
 
 
 # --- NEW HELPER FUNCTION ---
@@ -262,3 +263,26 @@ def get_full_tender_details(db: Session, tender_id: UUID) -> Optional[FullTender
 
     # Validate the modified dictionary
     return FullTenderDetails.model_validate(combined)
+
+def get_daily_tenders(db: Session, start: Optional[int] = 0, end: Optional[int] = 1000, run_id: Optional[str] = None) -> DailyTendersResponse:
+    scrape_runs = tenderiq_repo.get_scrape_runs(db)
+    latest_scrape_run = scrape_runs[0]
+    categories_of_current_day = tenderiq_repo.get_all_categories(db, latest_scrape_run)
+
+    for category in categories_of_current_day:
+        tenders = tenderiq_repo.get_tenders_from_category(db, category, start or 0, end or 1000)
+        pydantic_tenders = [TenderModel.model_validate(t).model_dump(mode='json') for t in tenders]
+        category.tenders = pydantic_tenders
+
+    to_return = DailyTendersResponse(
+        id = latest_scrape_run.id,
+        run_at = latest_scrape_run.run_at,
+        date_str = latest_scrape_run.date_str,
+        name = latest_scrape_run.name,
+        contact = latest_scrape_run.contact,
+        no_of_new_tenders = latest_scrape_run.no_of_new_tenders,
+        company = latest_scrape_run.company,
+        queries = categories_of_current_day
+    )
+
+    return to_return
