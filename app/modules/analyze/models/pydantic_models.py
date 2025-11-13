@@ -118,23 +118,17 @@ class DataSheetSchema(BaseModel):
 # ============================================================================
 
 class RFPSectionSchema(BaseModel):
-    """Single RFP section with detailed analysis."""
-    section_number: str
-    section_name: str
-    summary: Optional[str] = None
-    key_points: Optional[List[str]] = Field(default_factory=list)
-    critical_requirements: Optional[List[str]] = Field(default_factory=list)
-    considerations: Optional[List[str]] = Field(default_factory=list)
-    risks: Optional[List[str]] = Field(default_factory=list)
-    action_items: Optional[List[str]] = Field(default_factory=list)
-    documents: Optional[List[str]] = Field(default_factory=list)
+    section_name: str;
+    section_title: str;
+    summary: str;
+    key_requirements: List[str];
+    compliance_issues: List[str];
+    page_references: List[int];
 
 
 class RFPSummarySchema(BaseModel):
-    """Summary statistics of RFP sections."""
-    total_sections: Optional[int] = None
-    total_requirements: Optional[int] = None
-    criticality: Optional[Dict[str, int]] = None
+    total_sections: int
+    total_requirements: int
 
 
 class RFPSectionsResponseSchema(BaseModel):

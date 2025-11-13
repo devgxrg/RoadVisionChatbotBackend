@@ -5,9 +5,10 @@ from typing import List, Optional
 from uuid import UUID
 from sqlalchemy.orm import Session, joinedload
 
+from app.modules.analyze.models.pydantic_models import RFPSectionSchema
 from app.modules.tenderiq.db.schema import Tender
 
-from ..db.schema import TenderAnalysis
+from ..db.schema import AnalysisRFPSection, TenderAnalysis
 
 def get_wishlisted_tenders(db: Session) -> List[Tender]:
     wishlisted = db.query(Tender).filter(Tender.is_wishlisted == True).all()
@@ -67,4 +68,11 @@ def tender_is_analyzed(db: Session, tender_id: str) -> Optional[TenderAnalysis]:
             joinedload(TenderAnalysis.document_templates)
         )
         .first()
+    )
+
+def get_rfp_sections(db: Session, analysis_id: UUID) -> List[AnalysisRFPSection]:
+    return (
+        db.query(AnalysisRFPSection)
+        .filter_by(analysis_id=analysis_id)
+        .all()
     )

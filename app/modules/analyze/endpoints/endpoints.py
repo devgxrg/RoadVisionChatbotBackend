@@ -18,6 +18,7 @@ from app.modules.analyze.db.schema import TenderAnalysis
 from app.modules.analyze.models.pydantic_models import TenderAnalysisResponse
 from app.modules.auth.services.auth_service import get_current_active_user
 from app.modules.analyze.repositories import repository as analyze_repo
+from app.modules.analyze.services import analysis_rfp_service as rfp_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -107,6 +108,8 @@ def get_tender_analysis(
                 detail=f"Analysis not found for tender {tender_id}",
             )
 
+        rfp_section = rfp_service.get_rfp_sections(db, analysis.id)
+
         # Build the response with whatever data is available
         # Null fields indicate the analysis hasn't reached that stage yet
         response = TenderAnalysisResponse(
@@ -123,7 +126,7 @@ def get_tender_analysis(
             # RFP sections and templates would be fetched from related tables if needed
             # For now, returning None - can be extended to fetch from AnalysisRFPSection
             # and AnalysisDocumentTemplate tables
-            rfp_sections=None,
+            rfp_sections=rfp_section,
             templates=None,
         )
 
