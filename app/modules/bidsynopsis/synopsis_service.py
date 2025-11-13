@@ -1,3 +1,18 @@
+"""
+BidSynopsis Business Logic Layer
+
+This module contains the core business logic functions for generating bid synopsis.
+Following the project's architectural pattern:
+
+- synopsis_service.py (this file): Core business logic functions 
+- services/bid_synopsis_service.py: Service layer that orchestrates operations
+- db/repository.py: Data access layer
+- endpoints/synopsis.py: API endpoint layer
+
+The main function generate_bid_synopsis() is used by the service layer
+to transform tender and scraped_tender data into structured bid synopsis.
+"""
+
 from typing import Optional, Union
 from uuid import UUID
 from decimal import Decimal
@@ -5,7 +20,8 @@ from datetime import datetime
 from sqlalchemy.orm import Session, joinedload
 import re
 
-from app.modules.tenderiq.db.schema import Tender, ScrapedTender
+from app.modules.tenderiq.db.schema import Tender
+from app.modules.scraper.db.schema import ScrapedTender
 from .pydantic_models import (
     BasicInfoItem,
     RequirementItem,
@@ -15,27 +31,49 @@ from .pydantic_models import (
 
 def parse_indian_currency(value: Union[str, int, float, None]) -> float:
     """
-    Converts Indian currency format (with Crores) to a numeric value.
+    Converts Indian currency format (with Crores, Lakhs) to a numeric value.
     1 Crore = 10,000,000
+    1 Lakh = 100,000
     """
     if value is None:
         return 0.0
 
     if isinstance(value, str):
-        # Handle "Crore" conversion
-        if "crore" in value.lower():
-            match = re.search(r'[\d,.]+', value.lower().replace('crore', ''))
+        value_lower = value.lower()
+        
+        # Handle "crore" conversion
+        if "crore" in value_lower:
+            match = re.search(r'([\d,.]+)', value_lower.replace('crore', ''))
             if match:
-                cleaned_value = match.group(0).replace(',', '')
+                cleaned_value = match.group(1).replace(',', '')
                 try:
-                    return float(cleaned_value)
+                    return float(cleaned_value)  # Already in Crores
+                except ValueError:
+                    pass
+        
+        # Handle "lakh" conversion  
+        if "lakh" in value_lower:
+            match = re.search(r'([\d,.]+)', value_lower.replace('lakh', ''))
+            if match:
+                cleaned_value = match.group(1).replace(',', '')
+                try:
+                    lakh_value = float(cleaned_value)
+                    return lakh_value / 100  # Convert Lakhs to Crores
                 except ValueError:
                     pass
 
         # General cleaning: Extract numeric part
         cleaned_value = re.sub(r'[^\d.]', '', value).replace(',', '')
         try:
-            return float(cleaned_value)
+            numeric_value = float(cleaned_value)
+            # If it's a large number (> 1000000), likely in Rs, convert to Crores
+            if numeric_value > 1000000:
+                return numeric_value / 10000000
+            # If it's a medium number (> 1000), likely in thousands, convert appropriately  
+            elif numeric_value > 1000:
+                return numeric_value / 10000000  # Assume Rs
+            else:
+                return numeric_value  # Assume already in appropriate unit
         except ValueError:
             return 0.0
 
@@ -58,7 +96,8 @@ def get_estimated_cost_in_crores(tender: Tender) -> float:
         value = float(tender.estimated_cost)
 
     # If value is in base currency (Rs), convert to Crores
-    if value > 100000000:
+    # 1 Crore = 10,000,000 Rs
+    if value > 10000000:  # If > 1 Crore, assume it's in Rs
         return value / 10000000
     return value
 
@@ -75,16 +114,120 @@ def get_bid_security_in_crores(tender: Tender) -> float:
     else:
         value = float(tender.bid_security)
 
-    # If value is in base currency (Rs), convert to Crores
-    if value > 10000000:
+    # Smart conversion based on value range
+    # EMD is typically 1-5% of tender value, so use that for context
+    if value > 10000000:  # If > 1 Crore, assume it's in Rs
         return value / 10000000
-    return value
+    elif value > 10000:  # If > 10K, assume it's in Rs (small EMD)
+        return value / 10000000  
+    elif value > 100:  # If > 100, likely in Lakhs
+        return value / 100
+    else:  # Already in Crores or very small value
+        return value
+
+
+def _get_work_name(tender: Tender, scraped_tender: Optional[ScrapedTender]) -> str:
+    """
+    Gets the work name prioritizing scraped tender data over tender table.
+    """
+    # First try scraped tender data (usually more detailed)
+    if scraped_tender:
+        # Try tender_name from scraped data first
+        if scraped_tender.tender_name:
+            cleaned = _clean_tender_title(scraped_tender.tender_name, tender.employer_name)
+            if cleaned != "N/A" and cleaned != scraped_tender.tender_name:
+                return cleaned
+        
+        # Try tender_brief if tender_name wasn't useful
+        if scraped_tender.tender_brief:
+            brief = scraped_tender.tender_brief.strip()
+            if len(brief) > 10 and brief.lower() != (tender.employer_name or "").lower():
+                # Take first sentence or reasonable portion
+                sentences = brief.split('.', 1)
+                first_part = sentences[0].strip()
+                if len(first_part) > 20:
+                    return first_part
+                return brief[:100] + "..." if len(brief) > 100 else brief
+    
+    # Fallback to tender table data
+    if tender.tender_title:
+        cleaned = _clean_tender_title(tender.tender_title, tender.employer_name)
+        if cleaned != "N/A":
+            return cleaned
+    
+    # Last fallback
+    return "N/A"
+
+
+def _clean_tender_title(title: str, employer_name: Optional[str]) -> str:
+    """
+    Cleans tender title by removing employer name and unwanted prefixes.
+    Uses actual scraped data only, no artificial categories.
+    """
+    if not title or title.lower() == "n/a":
+        return "N/A"
+    
+    original_title = title
+    
+    # Remove leading numbers/punctuation first (like "1.", "2.", etc.)
+    title = re.sub(r'^[0-9\s\.\-\:]+', '', title).strip()
+    
+    # If title is exactly the same as employer name, it's probably not the actual work description
+    if employer_name and title.strip().lower() == employer_name.strip().lower():
+        return "N/A"  # Let the calling function handle fallback to scraped data
+    
+    # Remove employer name if present but keep the work description
+    if employer_name and employer_name.lower() in title.lower():
+        # Try to extract the part that's not the employer name
+        title_parts = title.split()
+        employer_parts = employer_name.split()
+        filtered_parts = [part for part in title_parts if part.lower() not in [ep.lower() for ep in employer_parts]]
+        if len(filtered_parts) > 2:  # Only use if we have substantial content left
+            title = ' '.join(filtered_parts).strip()
+    
+    return title if title else "N/A"
+
+
+def extract_emd_from_scraped(scraped_tender: Optional[ScrapedTender]) -> float:
+    """
+    Extracts EMD value from scraped tender data.
+    Returns value in Crores or 0.0 if not found.
+    """
+    if not scraped_tender:
+        return 0.0
+
+    # Try emd field first
+    if scraped_tender.emd:
+        emd_value = parse_indian_currency(scraped_tender.emd)
+        # EMD is typically in Lakhs, so convert appropriately
+        if emd_value > 100:  # If > 100, likely in actual currency (Rs)
+            return emd_value / 10000000  # Convert Rs to Crores
+        elif emd_value > 0.1:  # If between 0.1-100, likely in Lakhs
+            return emd_value / 100  # Convert Lakhs to Crores
+        return emd_value  # Already in Crores
+
+    return 0.0
+
+
+def _format_emd_display(emd_crores: float) -> str:
+    """
+    Formats EMD for display with appropriate units.
+    """
+    if emd_crores <= 0:
+        return "N/A"
+    
+    if emd_crores >= 1.0:
+        return f"Rs. {emd_crores:.2f} Crores in form of Bank Guarantee"
+    else:
+        # Convert to Lakhs for better readability
+        emd_lakhs = emd_crores * 100
+        return f"Rs. {emd_lakhs:.2f} Lakhs in form of Bank Guarantee"
 
 
 def extract_document_cost(scraped_tender: Optional[ScrapedTender]) -> str:
     """
     Extracts document cost from scraped tender data.
-    Returns formatted string or "N/A" if not available.
+    Returns formatted string with Rs. prefix or "N/A" if not available.
     """
     if not scraped_tender:
         return "N/A"
@@ -93,7 +236,12 @@ def extract_document_cost(scraped_tender: Optional[ScrapedTender]) -> str:
     if scraped_tender.document_fees:
         cost_str = scraped_tender.document_fees.strip()
         if cost_str and cost_str.lower() != "n/a" and cost_str != "":
-            return f"Rs. {cost_str}" if not cost_str.lower().startswith('rs') else cost_str
+            # Clean and standardize to Rs. format
+            # Remove existing currency indicators
+            cleaned = re.sub(r'\b(rs\.?|inr|₹)\s*', '', cost_str, flags=re.IGNORECASE).strip()
+            # Remove leading/trailing slashes or dashes
+            cleaned = re.sub(r'^[-/\s]+|[-/\s]+$', '', cleaned).strip()
+            return f"Rs. {cleaned}"
 
     return "N/A"
 
@@ -155,7 +303,11 @@ def format_bid_due_date(tender: Tender, scraped_tender: Optional[ScrapedTender])
     Formats bid due date from tender or scraped data.
     """
     if tender.submission_deadline:
-        return tender.submission_deadline.strftime("%d.%m.%Y, %H:%M %p")
+        # Check if it's midnight (00:00) and format accordingly
+        if tender.submission_deadline.hour == 0 and tender.submission_deadline.minute == 0:
+            return tender.submission_deadline.strftime("%d.%m.%Y, 11:59 PM")
+        else:
+            return tender.submission_deadline.strftime("%d.%m.%Y, %H:%M %p")
 
     if scraped_tender and scraped_tender.due_date:
         return scraped_tender.due_date
@@ -176,6 +328,10 @@ def generate_basic_info(tender: Tender, scraped_tender: Optional[ScrapedTender])
     completion_period = extract_completion_period(scraped_tender)
     pre_bid_meeting = extract_pre_bid_meeting_details(scraped_tender, tender)
     bid_due_date = format_bid_due_date(tender, scraped_tender)
+    
+    # Get EMD from either tender or scraped data
+    emd_from_scraped = extract_emd_from_scraped(scraped_tender)
+    final_emd = emd_crores if emd_crores > 0 else emd_from_scraped
 
     basic_info = [
         BasicInfoItem(
@@ -186,7 +342,7 @@ def generate_basic_info(tender: Tender, scraped_tender: Optional[ScrapedTender])
         BasicInfoItem(
             sno=2,
             item="Name of Work",
-            description=tender.tender_title or (scraped_tender.tender_name if scraped_tender else "N/A")
+            description=_get_work_name(tender, scraped_tender)
         ),
         BasicInfoItem(
             sno=3,
@@ -201,7 +357,7 @@ def generate_basic_info(tender: Tender, scraped_tender: Optional[ScrapedTender])
         BasicInfoItem(
             sno=5,
             item="EMD",
-            description=f"Rs. {emd_crores:.2f} Crores in form of Bank Guarantee" if emd_crores > 0 else "N/A"
+            description=_format_emd_display(final_emd)
         ),
         BasicInfoItem(
             sno=6,
@@ -237,15 +393,23 @@ def generate_all_requirements(tender: Tender, scraped_tender: Optional[ScrapedTe
     """
     Generates the allRequirements array with eligibility criteria.
     Uses tender data for calculations and scraped data for requirement details.
+    Uses generic requirements suitable for most infrastructure projects.
     """
     tender_value_crores = get_estimated_cost_in_crores(tender)
     tender_value = tender.estimated_cost or 0
 
-    # Try to extract requirement details from scraped_tender if available
-    requirement_text = "N/A"
-    if scraped_tender and scraped_tender.tender_details:
-        requirement_text = scraped_tender.tender_details[:500]  # First 500 chars
+    # Use actual project description from scraped data if available
+    project_description = "infrastructure projects"
+    if scraped_tender and scraped_tender.tender_brief:
+        brief = scraped_tender.tender_brief.lower()
+        if any(word in brief for word in ["water", "pipeline", "supply", "treatment"]):
+            project_description = "water supply and infrastructure projects"
+        elif any(word in brief for word in ["building", "construction", "structure"]):
+            project_description = "building and construction projects"
+        elif any(word in brief for word in ["road", "highway", "bridge"]):
+            project_description = "road and highway projects"
 
+    # Base requirements (common to all categories)
     requirements = [
         RequirementItem(
             description="Site Visit",
@@ -279,7 +443,7 @@ def generate_all_requirements(tender: Tender, scraped_tender: Optional[ScrapedTe
         ),
         RequirementItem(
             description="",
-            requirement=f"Capital cost of eligible projects should be more than Rs. {(tender_value / 1000000):.2f} Crores." if tender_value > 0 else "Capital cost of eligible projects should be as per tender requirements.",
+            requirement=f"Capital cost of eligible projects should be more than Rs. {tender_value_crores:.2f} Crores." if tender_value_crores > 0 else "Capital cost of eligible projects should be as per tender requirements.",
             ceigallValue=""
         ),
         RequirementItem(
@@ -287,16 +451,24 @@ def generate_all_requirements(tender: Tender, scraped_tender: Optional[ScrapedTe
             requirement=f"Rs. {(tender_value_crores * 0.25):.2f} Crores" if tender_value_crores > 0 else "N/A",
             ceigallValue=""
         ),
+    ]
+
+    # Generic infrastructure work requirements (suitable for all project types)
+    requirements.extend([
         RequirementItem(
-            description="a) Highway/Road Work",
-            requirement=f"One project shall consist of Widening / reconstruction/ up-gradation works on NH/ SH/ Expressway or on any category for four lane road of at least 9 km, having completion cost of project equal to or more than Rs. {(tender_value_crores * 0.26):.2f} crores. For this purpose, a project shall be considered to be completed, if desired purpose of the project is achieved, and more than 90% of the value of work has been completed.",
+            description="a) Similar Work Experience",
+            requirement=f"One project of {project_description} with completion cost of project equal to or more than Rs. {(tender_value_crores * 0.26):.2f} crores. For this purpose, a project shall be considered to be completed if desired purpose of the project is achieved, and more than 90% of the value of work has been completed.",
             ceigallValue=""
         ),
         RequirementItem(
-            description="b) Bridge Work",
-            requirement="One project shall consist of four lane bridge constructed on perennial river with a minimum length of 4.00 km including viaduct approaches, if the bridge so constructed is of 2 lane then the minimum length shall be 6.00 km including viaduct approaches. The bridge constructed shall have span equal to or greater than 50 meters in last 7 years.",
+            description="b) Technical Capability",
+            requirement=f"Experience in executing similar {project_description} with required technical specifications and quality standards as per relevant Indian Standards and project requirements.",
             ceigallValue=""
         ),
+    ])
+
+    # Common financial requirements
+    requirements.extend([
         RequirementItem(
             description="Credit Rating",
             requirement="The Bidder shall have 'A' and above Credit Rating given by Credit Rating Agencies authorized by SEBI.",
@@ -304,7 +476,7 @@ def generate_all_requirements(tender: Tender, scraped_tender: Optional[ScrapedTe
         ),
         RequirementItem(
             description="Clause 2.2.2 A - Special Requirement",
-            requirement="The bidder in last Seven years, shall have executed minimum 1,00,000 cum of soil stabilization / Full Depth Recycling in Roads / Yards/ Runways etc, using Cement and additives.",
+            requirement=f"The bidder shall have experience in executing {project_description} with required materials and construction standards as per relevant specifications and quality requirements.",
             ceigallValue=""
         ),
         RequirementItem(
@@ -332,7 +504,7 @@ def generate_all_requirements(tender: Tender, scraped_tender: Optional[ScrapedTe
             requirement="In case of a Consortium, the combined technical capability and net worth of those Members, who have and shall continue to have an equity share of at least 26% (twenty six per cent) each in the SPV, should satisfy the above conditions of eligibility.",
             ceigallValue=""
         )
-    ]
+    ])
 
     return requirements
 

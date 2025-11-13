@@ -1,11 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session
 from uuid import UUID
 
 from app.db.database import get_db_session
-from app.modules.tenderiq.db.schema import Tender, ScrapedTender
-from .pydantic_models import BidSynopsisResponse, ErrorResponse
-from .synopsis_service import generate_bid_synopsis
+from app.modules.bidsynopsis.pydantic_models import BidSynopsisResponse, ErrorResponse
+from app.modules.bidsynopsis.services.bid_synopsis_service import BidSynopsisService
 
 router = APIRouter()
 
@@ -37,6 +36,12 @@ def get_bid_synopsis(
 ) -> BidSynopsisResponse:
     """
     Get the complete bid synopsis for a tender with dynamic data fetching.
+    
+    **Architecture Pattern:**
+    This endpoint follows the same layered architecture as other modules:
+    - Service Layer: BidSynopsisService (business logic)
+    - Repository Layer: BidSynopsisRepository (data access)
+    - Endpoint Layer: This function (API interface)
 
     This endpoint retrieves structured bid synopsis data including:
     - **basicInfo**: 10 key fields (Employer, Name of Work, Tender Value, etc.)
@@ -46,42 +51,8 @@ def get_bid_synopsis(
     - `tenders` table: Core tender information (estimated_cost, dates, etc.)
     - `scraped_tenders` table: Detailed scraper data (document_fees, tender_details, etc.)
 
-    The response is designed to be displayed in a two-pane layout:
-    - Left pane: Editable draft sections
-    - Right pane: PDF-style preview
-
     **Path Parameters:**
     - `tender_id` (UUID): The unique identifier of the tender
-
-    **Example Request:**
-    ```
-    GET /api/v1/bidsynopsis/synopsis/550e8400-e29b-41d4-a716-446655440000
-    ```
-
-    **Example Response:**
-    ```json
-    {
-      "basicInfo": [
-        {
-          "sno": 1,
-          "item": "Employer",
-          "description": "National Highways Authority of India (NHAI)"
-        },
-        {
-          "sno": 2,
-          "item": "Name of Work",
-          "description": "Construction of 4-Lane Highway"
-        }
-      ],
-      "allRequirements": [
-        {
-          "description": "Site Visit",
-          "requirement": "Bidders shall submit their respective Bids after visiting the Project site...",
-          "ceigallValue": ""
-        }
-      ]
-    }
-    ```
 
     **Error Responses:**
     - `404`: Tender not found in database
@@ -103,30 +74,16 @@ def get_bid_synopsis(
     Fields marked as "N/A" indicate missing data in both tables.
     """
     try:
-        # Query tender with eager loading for better performance
-        tender = db.query(Tender).filter(Tender.id == tender_id).first()
+        # Use service layer - same pattern as other endpoints
+        service = BidSynopsisService()
+        bid_synopsis = service.get_bid_synopsis(db, tender_id)
 
-        if not tender:
+        if not bid_synopsis:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Tender with ID {tender_id} not found."
             )
 
-        # Try to find associated scraped tender by tender_ref_number or title
-        scraped_tender = None
-        if tender.tender_ref_number:
-            scraped_tender = db.query(ScrapedTender).filter(
-                ScrapedTender.tender_id_str == tender.tender_ref_number
-            ).first()
-
-        # If not found by ref_number, try by title (fuzzy match)
-        if not scraped_tender and tender.tender_title:
-            scraped_tender = db.query(ScrapedTender).filter(
-                ScrapedTender.tender_name.ilike(f"%{tender.tender_title[:50]}%")
-            ).first()
-
-        # Generate and return the bid synopsis with both tender and scraped_tender data
-        bid_synopsis = generate_bid_synopsis(tender, scraped_tender)
         return bid_synopsis
 
     except HTTPException:
@@ -134,7 +91,7 @@ def get_bid_synopsis(
         raise
 
     except Exception as e:
-        # Log and return generic 500 error
+        # Log and return generic 500 error - same pattern as other endpoints
         print(f"❌ Error generating bid synopsis for tender {tender_id}: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
