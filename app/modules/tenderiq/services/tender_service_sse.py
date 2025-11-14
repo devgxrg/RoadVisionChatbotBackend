@@ -4,8 +4,7 @@ from typing import List, Optional
 from uuid import UUID
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
-from app.modules.scraper.db.schema import ScrapeRun
-from app.modules.tenderiq.models.pydantic_models import DailyTendersResponse, ScrapedDate, ScrapedDatesResponse, Tender
+from app.modules.tenderiq.models.pydantic_models import DailyTendersResponse, ScrapedDate, ScrapedDatesResponse, Tender, ScrapedTenderQuery
 from app.modules.tenderiq.repositories import repository as tenderiq_repo
 
 def get_daily_tenders_limited(db: Session, start: int, end: int):
@@ -42,18 +41,38 @@ def get_daily_tenders_sse(db: Session, start: Optional[int] = 0, end: Optional[i
         "last_7_days"
         "last_30_days"
     """
+
     scrape_runs = tenderiq_repo.get_scrape_runs(db)
-    latest_scrape_run = scrape_runs[0] if not run_id else tenderiq_repo.get_scrape_run_by_id(db, run_id)
-    categories_of_current_day = tenderiq_repo.get_all_categories(db, latest_scrape_run)
+    upper_limit = 0
+    uuid = None
+
+    if run_id == "last_2_days":
+        upper_limit = min(2, len(scrape_runs))
+    elif run_id == "last_5_days":
+        upper_limit = min(5, len(scrape_runs))
+    elif run_id == "last_7_days":
+        upper_limit = min(7, len(scrape_runs))
+    elif run_id == "last_30_days":
+        upper_limit = min(30, len(scrape_runs))
+    elif run_id == "latest":
+        upper_limit = 0
+    else:
+        uuid = run_id
+
+    sliced_scrape_runs = scrape_runs[0:upper_limit] if not uuid else [tenderiq_repo.get_scrape_run_by_id(db, uuid)]
+    categories_of_current_day: list[ScrapedTenderQuery] = []
+    for run in sliced_scrape_runs:
+        queries_of_this_run = tenderiq_repo.get_all_categories(db, run)
+        categories_of_current_day.extend(queries_of_this_run)
 
     to_return = DailyTendersResponse(
-        id = latest_scrape_run.id,
-        run_at = latest_scrape_run.run_at,
-        date_str = latest_scrape_run.date_str,
-        name = latest_scrape_run.name,
-        contact = latest_scrape_run.contact,
-        no_of_new_tenders = latest_scrape_run.no_of_new_tenders,
-        company = latest_scrape_run.company,
+        id = UUID(str(sliced_scrape_runs[0].id)),
+        run_at = sliced_scrape_runs[0].run_at,
+        date_str = str(sliced_scrape_runs[0].date_str),
+        name = str(sliced_scrape_runs[0].name),
+        contact = str(sliced_scrape_runs[0].contact),
+        no_of_new_tenders = str(sliced_scrape_runs[0].no_of_new_tenders),
+        company = str(sliced_scrape_runs[0].company),
         queries = categories_of_current_day
     )
 
